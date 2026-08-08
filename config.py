@@ -27,7 +27,7 @@ class GeneralConfig(PluginConfigBase):
     split_delay: float = Field(default=0.3, description="分句发送时每条语音之间的延迟（秒）")
     use_base64_audio: bool = Field(default=True, description="true=base64 走 IPC；false=文件路径 voiceurl")
     audio_output_dir: str = Field(
-        default="data/plugins/github.CGl123.gpt-sovits-voice-plugin",
+        default="data/plugins/CGl123.gpt-sovits-voice-plugin",
         description="音频输出目录（相对项目根目录或绝对路径），默认存到主程序推荐的 data/plugins 下",
     )
     send_error_messages: bool = Field(default=True, description="合成失败时是否向用户发送错误提示")

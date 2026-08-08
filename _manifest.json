@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "id": "github.CGl123.gpt-sovits-voice-plugin",
+  "id": "CGl123.gpt-sovits-voice-plugin",
   "version": "1.0.0",
   "name": "GPT-SoVITS 语音插件",
   "description": "基于本地 GPT-SoVITS 服务的文本转语音插件，支持多种语音风格，LLM 可自主调用或用户手动 /tts 触发。",

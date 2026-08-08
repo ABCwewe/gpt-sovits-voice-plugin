@@ -1,0 +1,43 @@
+{
+  "manifest_version": 2,
+  "id": "github.CGl123.gpt-sovits-voice-plugin",
+  "version": "1.0.0",
+  "name": "GPT-SoVITS 语音插件",
+  "description": "基于本地 GPT-SoVITS 服务的文本转语音插件，支持多种语音风格，LLM 可自主调用或用户手动 /tts 触发。",
+  "author": {
+    "name": "CGl123",
+    "url": "https://github.com/CGl123"
+  },
+  "license": "AGPL-3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/CGl123/gpt-sovits-voice-plugin",
+    "homepage": "https://github.com/CGl123/gpt-sovits-voice-plugin",
+    "documentation": "https://github.com/CGl123/gpt-sovits-voice-plugin/blob/main/README.md",
+    "issues": "https://github.com/CGl123/gpt-sovits-voice-plugin/issues"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "aiohttp",
+      "version_spec": ">=3.8.0"
+    }
+  ],
+  "capabilities": [
+    "send.custom",
+    "send.text"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}

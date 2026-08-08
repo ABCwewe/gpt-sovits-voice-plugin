@@ -9,10 +9,11 @@
 Version: 1.0.0
 """
 
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
 import asyncio
 import logging
-import os
-from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
 
@@ -24,9 +25,6 @@ from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
-
-# 工具 style 参数的可选枚举（与 config.toml 中的风格保持一致；执行时以配置为准）
-STYLE_ENUM = ["default", "流萤_活泼", "流萤_伤感", "流萤_疑惑", "流萤_平静"]
 
 
 class GPTSovitsVoicePlugin(MaiBotPlugin):
@@ -87,8 +85,9 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             "【使用建议】\n"
             "- 用户明确要求用语音回复时必须使用；也适合简短问候、活泼场景\n"
             "- 过长（>100字）或过短（<3字）的内容不适合语音，请直接文字回复\n"
-            "- 可选 style 参数选择语音风格；不传则用 default，风格不存在会自动回退 default\n"
-            "- 可用风格：default、流萤_活泼、流萤_伤感、流萤_疑惑、流萤_平静"
+            "- 可选 style 参数选择语音风格（如 default、流萤_活泼、流萤_伤感等）；"
+            "可用风格以 config.toml 的 [[gpt_sovits.styles]] 配置为准，新增风格可直接使用；"
+            "不传则用 default，风格不存在会自动回退 default"
         ),
         parameters=[
             ToolParameterInfo(
@@ -100,9 +99,11 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="style",
                 param_type=ToolParamType.STRING,
-                description="语音风格（可选，不传则用 default；风格不存在会自动回退 default）",
+                description=(
+                    "语音风格（可选，不传则用 default；"
+                    "可用风格以 config.toml 的 styles 配置为准，风格不存在会自动回退 default）"
+                ),
                 required=False,
-                enum_values=STYLE_ENUM,
             ),
         ],
     )
@@ -265,9 +266,7 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
     def _project_root(self) -> str:
         """推断 MaiBot 项目根目录（plugins/<本插件>/plugin.py 向上三级）。"""
 
-        return os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
+        return str(Path(__file__).resolve().parents[2])
 
 
 def create_plugin() -> GPTSovitsVoicePlugin:

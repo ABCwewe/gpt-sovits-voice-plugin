@@ -29,7 +29,7 @@ max_text_length = 200        # 文本最大长度，超过降级为文字回复
 split_sentences = true       # 长文本分句逐段发送
 split_delay = 0.3            # 分句发送延迟（秒）
 use_base64_audio = true      # true=base64 走 IPC；false=文件路径 voiceurl
-audio_output_dir = ""        # 音频输出目录，留空使用项目根目录
+audio_output_dir = "data/plugins/github.CGl123.gpt-sovits-voice-plugin"  # 文件模式输出目录，可修改
 send_error_messages = true   # 合成失败时是否提示用户
 
 [gpt_sovits]

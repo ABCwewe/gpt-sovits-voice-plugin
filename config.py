@@ -5,6 +5,16 @@ from typing import List
 from maibot_sdk import Field, PluginConfigBase
 
 
+class PluginSectionConfig(PluginConfigBase):
+    """插件基础配置。"""
+
+    __ui_label__ = "插件"
+    __ui_icon__ = "package"
+    __ui_order__ = 0
+
+    enabled: bool = Field(default=True, description="是否启用插件")
+
+
 class GeneralConfig(PluginConfigBase):
     """通用设置。"""
 
@@ -49,5 +59,6 @@ class GPTSovitsConfig(PluginConfigBase):
 class PluginConfig(PluginConfigBase):
     """插件总配置。"""
 
+    plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     gpt_sovits: GPTSovitsConfig = Field(default_factory=GPTSovitsConfig)

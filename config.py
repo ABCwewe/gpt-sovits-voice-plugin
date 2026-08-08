@@ -22,9 +22,8 @@ class GeneralConfig(PluginConfigBase):
     __ui_icon__ = "settings"
     __ui_order__ = 1
 
-    max_text_length: int = Field(default=200, description="文本最大长度，超过则降级为文字回复")
-    split_sentences: bool = Field(default=True, description="长文本分句逐段发送")
-    split_delay: float = Field(default=0.3, description="分句发送时每条语音之间的延迟（秒）")
+    min_text_length: int = Field(default=2, description="文本最小长度，过短（如单字）合成效果差，低于此值拒绝合成")
+    max_text_length: int = Field(default=200, description="文本最大长度，超过有超时风险，拒绝合成")
     use_base64_audio: bool = Field(default=True, description="true=base64 走 IPC；false=文件路径 voiceurl")
     audio_output_dir: str = Field(
         default="data/plugins/CGl123.gpt-sovits-voice-plugin",

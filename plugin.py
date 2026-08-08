@@ -12,7 +12,7 @@ Version: 1.0.0
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
 
@@ -22,7 +22,6 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
-from .utils import split_sentences
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
 
@@ -180,36 +179,47 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             if not raw_text:
                 return False, "文本为空"
 
+            min_length = self.config.general.min_text_length
             max_length = self.config.general.max_text_length
-            if len(raw_text) > max_length:
-                # 超过长度限制降级为文字回复，避免超长内容被截断播放
+            text_length = len(raw_text)
+
+            # 过短文本（如单字）合成效果差，直接拒绝
+            if text_length < min_length:
                 self.ctx.logger.warning(
-                    "%s 文本长度 %d 超过限制 %d，降级为文字回复",
-                    log_prefix, len(raw_text), max_length,
+                    "%s 文本长度 %d 小于限制 %d，拒绝合成",
+                    log_prefix, text_length, min_length,
                 )
-                await self.ctx.send.text(
-                    f"文本过长（{len(raw_text)}字符），超过语音长度限制（{max_length}），"
-                    f"已改为文字发送。\n\n{raw_text}",
+                await self._send_error(
+                    stream_id, f"文本过短（{text_length}字），无法合成语音",
+                )
+                return False, "文本过短"
+
+            # 超长文本有超时风险，直接拒绝
+            if text_length > max_length:
+                self.ctx.logger.warning(
+                    "%s 文本长度 %d 超过限制 %d，拒绝合成",
+                    log_prefix, text_length, max_length,
+                )
+                await self._send_error(
                     stream_id,
+                    f"文本过长（{text_length}字），超过语音长度限制（{max_length}）",
                 )
-                return True, "文本过长，已改为文字回复"
+                return False, "文本过长"
 
             style_name = self._client.resolve_style(style, log_prefix)
 
-            # 分句：长文本逐段发送，提升听感
-            if self.config.general.split_sentences:
-                sentences = [s.strip() for s in split_sentences(raw_text) if s.strip()]
-            else:
-                sentences = [raw_text]
-            if not sentences:
-                sentences = [raw_text]
+            # 不分句，整段直接合成（分句交给合成服务智能处理）
+            audio_data = await self._client.synthesize(raw_text, style_name, log_prefix)
+            if audio_data is None:
+                await self._send_error(stream_id, "语音合成失败")
+                return False, "合成失败"
 
-            return await self._send_in_segments(
-                sentences=sentences,
-                style_name=style_name,
-                stream_id=stream_id,
-                log_prefix=log_prefix,
+            success, message = await self._audio.send(
+                self.ctx, audio_data, style_name, stream_id, log_prefix,
             )
+            if not success:
+                await self._send_error(stream_id, f"语音合成失败: {message}")
+            return success, message
         except asyncio.TimeoutError:
             timeout_sec = self.config.gpt_sovits.timeout
             self.ctx.logger.error("%s TTS 超时（%ss）", log_prefix, timeout_sec)
@@ -225,62 +235,6 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             )
             await self._send_error(stream_id, f"语音合成参数错误: {exc}")
             return False, str(exc)
-
-    async def _send_in_segments(
-        self,
-        sentences: List[str],
-        style_name: str,
-        stream_id: str,
-        log_prefix: str,
-    ) -> Tuple[bool, str]:
-        """逐句合成发送；单句直接发送。"""
-
-        if len(sentences) <= 1:
-            success, message = await self._synthesize_and_send(
-                sentences[0], style_name, stream_id, log_prefix,
-            )
-            if not success:
-                await self._send_error(stream_id, f"语音合成失败: {message}")
-            return success, message
-
-        success_count = 0
-        for index, sentence in enumerate(sentences):
-            self.ctx.logger.debug(
-                "%s 分段发送 %d/%d: %s",
-                log_prefix, index + 1, len(sentences), sentence[:30],
-            )
-            success, _ = await self._synthesize_and_send(
-                sentence, style_name, stream_id, log_prefix,
-            )
-            if success:
-                success_count += 1
-            else:
-                self.ctx.logger.warning(
-                    "%s 分段 %d 失败", log_prefix, index + 1,
-                )
-            if index < len(sentences) - 1 and self.config.general.split_delay > 0:
-                await asyncio.sleep(self.config.general.split_delay)
-
-        if success_count == 0:
-            await self._send_error(stream_id, "语音合成失败")
-            return False, "所有语音发送失败"
-        return True, f"成功发送 {success_count}/{len(sentences)} 条语音"
-
-    async def _synthesize_and_send(
-        self,
-        text: str,
-        style_name: str,
-        stream_id: str,
-        log_prefix: str,
-    ) -> Tuple[bool, str]:
-        """合成单句语音并发送。"""
-
-        audio_data = await self._client.synthesize(text, style_name, log_prefix)
-        if audio_data is None:
-            return False, f"合成失败（风格: {style_name}）"
-        return await self._audio.send(
-            self.ctx, audio_data, style_name, stream_id, log_prefix,
-        )
 
     # ─── 辅助 ────────────────────────────────────────────────────────────
 

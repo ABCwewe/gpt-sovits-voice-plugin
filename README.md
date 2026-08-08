@@ -10,7 +10,7 @@
 - 🎙️ **LLM 自主触发**：planner 判断需要语音回复时自动调用 `tts_voice` 工具
 - 🎛️ **多语音风格**：每个风格独立配置参考音频、提示文本、模型权重，风格缺失自动回退 `default`
 - 📝 **用户命令**：`/tts <文本> [-v <风格>]`
-- ✂️ **分句发送**：长文本按句切分逐段发送，听感更自然
+- 🔢 **字数限制**：过短（单字）与超长文本自动拒绝，上下限可配置
 - 📡 **双发送模式**：base64（IPC）或文件路径（voiceurl）
 
 ## 安装
@@ -25,9 +25,8 @@
 
 ```toml
 [general]
-max_text_length = 200        # 文本最大长度，超过降级为文字回复
-split_sentences = true       # 长文本分句逐段发送
-split_delay = 0.3            # 分句发送延迟（秒）
+min_text_length = 2          # 文本最小长度，过短（如单字）拒绝合成
+max_text_length = 200        # 文本最大长度，超过拒绝合成（超时风险）
 use_base64_audio = true      # true=base64 走 IPC；false=文件路径 voiceurl
 audio_output_dir = "data/plugins/CGl123.gpt-sovits-voice-plugin"  # 文件模式输出目录，可修改
 send_error_messages = true   # 合成失败时是否提示用户

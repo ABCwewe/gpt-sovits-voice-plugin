@@ -3,25 +3,17 @@
   "id": "CGl123.gpt-sovits-voice-plugin",
   "version": "1.1.0",
   "name": "GPT-SoVITS 语音插件（二改版）",
-  "description": "基于本地 GPT-SoVITS 服务的文本转语音插件。由 CGl123/gpt-sovits-voice-plugin 二改而来，新增按内容自动选语气、按语言自动切换模型、语速控制、文本清洗与音频有效性校验等功能。",
+  "description": "基于本地 GPT-SoVITS 服务的文本转语音插件。本版由 CGl123/gpt-sovits-voice-plugin 二改而来（原作者 CGl123），新增按内容自动选语气、按语言自动切换模型、语速控制、文本清洗、音频有效性校验与配置校验等功能。",
   "author": {
     "name": "CGl123",
     "url": "https://github.com/CGl123"
   },
-  "contributors": [
-    {
-      "name": "Lbcheng1145",
-      "url": "https://github.com/Lbcheng1145",
-      "role": "二改维护"
-    }
-  ],
   "license": "AGPL-3.0-or-later",
   "urls": {
     "repository": "https://github.com/Lbcheng1145/gpt-sovits-voice-plugin",
     "homepage": "https://github.com/Lbcheng1145/gpt-sovits-voice-plugin",
     "documentation": "https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/blob/main/README.md",
-    "issues": "https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/issues",
-    "upstream": "https://github.com/CGl123/gpt-sovits-voice-plugin"
+    "issues": "https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/issues"
   },
   "host_application": {
     "min_version": "1.0.0",

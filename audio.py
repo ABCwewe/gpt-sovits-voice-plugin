@@ -24,6 +24,9 @@ class AudioSender:
     def __init__(self, config: GeneralConfig, project_root: str) -> None:
         self._config = config
         self._project_root = project_root
+        # 持有延迟清理任务的强引用。asyncio 只保存任务的弱引用，
+        # 不持有的话任务可能在 sleep 期间被 GC 回收，临时文件就永远留着了
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     async def send(
         self,
@@ -50,8 +53,11 @@ class AudioSender:
 
         await ctx.send.custom("voiceurl", audio_path, stream_id)
         logger.info("%s 语音已发送（文件，%s，风格=%s）", log_prefix, audio_path, style_name)
-        # 延迟清理：给 adapter 上传到 QQ 留足时间
-        asyncio.create_task(self._cleanup_async(audio_path))
+        # 延迟清理：给 adapter 上传到 QQ 留足时间。
+        # 任务句柄存入集合，避免仅被事件循环弱引用而在 sleep 期间被回收
+        task = asyncio.create_task(self._cleanup_async(audio_path))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
         return True, f"已发送语音（风格: {style_name}）"
 
     def _resolve_output_dir(self, ctx: "PluginContext") -> str:

@@ -11,7 +11,7 @@ import os
 
 P = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-spec = importlib.util.spec_from_file_location("u", rf"{P}\utils.py")
+spec = importlib.util.spec_from_file_location("u", os.path.join(P, "utils.py"))
 u = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(u)
 

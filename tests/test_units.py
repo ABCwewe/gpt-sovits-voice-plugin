@@ -19,7 +19,7 @@ _results = []
 
 
 def load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, rf"{P}\{filename}")
+    spec = importlib.util.spec_from_file_location(name, os.path.join(P, filename))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -295,7 +295,7 @@ check("转义后可完整还原",
 print("\n" + "=" * 66)
 print("测试 7: 并发锁存在性（修复问题 2）")
 print("=" * 66)
-src = open(rf"{P}\gpt_sovits.py", encoding="utf-8").read()
+src = open(os.path.join(P, "gpt_sovits.py"), encoding="utf-8").read()
 check("使用 asyncio.Lock 保护切换+合成", "asyncio.Lock()" in src)
 check("模型状态为实例变量（非 ClassVar）",
       "ClassVar" not in src and "self._current_gpt_weights" in src)

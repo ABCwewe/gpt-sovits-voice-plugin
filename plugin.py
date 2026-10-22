@@ -23,6 +23,8 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
+from .style_router import route_style
+from .utils import clean_text, detect_language
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
 
@@ -85,9 +87,14 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             "【使用建议】\n"
             "- 用户明确要求用语音回复时必须使用；也适合简短问候、活泼场景\n"
             "- 过长（>100字）或过短（<3字）的内容不适合语音，请直接文字回复\n"
-            "- 可选 style 参数选择语音风格（如 default、流萤_活泼、流萤_伤感等）；"
-            "可用风格以 config.toml 的 [[gpt_sovits.styles]] 配置为准，新增风格可直接使用；"
-            "不传则用 default，风格不存在会自动回退 default"
+            "\n【语气选择】\n"
+            "- style 参数可选，不传时插件会按文本内容自动判断语气\n"
+            "- 你也可以主动指定以表达更准确的情绪：\n"
+            "  · 兴奋：表达惊喜、夸赞、欢呼时（如「好耶！」「太棒了吧」）\n"
+            "  · 吐槽：表达无语、嫌弃、吐槽时（如「你在说什么啊」「服了」）\n"
+            "  · default：日常陈述、平淡对话\n"
+            "- 可用风格以 config.toml 的 [[gpt_sovits.styles]] 配置为准，新增风格可直接使用；"
+            "风格不存在会自动回退 default"
         ),
         parameters=[
             ToolParameterInfo(
@@ -176,7 +183,18 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             if self._client is None or self._audio is None:
                 return False, "插件尚未完成加载"
 
-            raw_text = (text or "").strip()
+            # 先清洗不可见字符（零宽符等会导致 GPT-SoVITS 侧 GBK 编码失败）
+            original = (text or "").strip()
+            raw_text = clean_text(original)
+            if original and not raw_text:
+                self.ctx.logger.warning(
+                    "%s 文本仅含不可见字符，拒绝合成", log_prefix,
+                )
+                return False, "文本为空"
+            if len(raw_text) != len(original):
+                self.ctx.logger.info(
+                    "%s 已清洗 %d 个不可见字符", log_prefix, len(original) - len(raw_text),
+                )
             if not raw_text:
                 return False, "文本为空"
 
@@ -208,6 +226,32 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                 return False, "文本过长"
 
             style_name = self._client.resolve_style(style, log_prefix)
+
+            # 调用方未指定风格时，按文本内容自动选择语气
+            if not (style or "").strip():
+                auto = getattr(self.config.gpt_sovits, "auto_style", None)
+                if auto is not None and auto.enabled:
+                    available = list(self._client.styles().keys())
+                    picked, reason = route_style(
+                        raw_text,
+                        available,
+                        [r.model_dump() for r in auto.rules],
+                        auto.fallback or "default",
+                    )
+                    if picked in available:
+                        style_name = picked
+                        self.ctx.logger.info(
+                            "%s 自动语气: %s（%s）", log_prefix, picked, reason,
+                        )
+
+            # 按文本语言挑选对应语言的模型/参考音频
+            lang = detect_language(raw_text)
+            lang_style = self._client.resolve_by_language(lang, style_name, log_prefix)
+            if lang_style != style_name:
+                self.ctx.logger.info(
+                    "%s 语言路由: %s -> %s", log_prefix, style_name, lang_style,
+                )
+                style_name = lang_style
 
             # 不分句，整段直接合成（分句交给合成服务智能处理）
             audio_data = await self._client.synthesize(raw_text, style_name, log_prefix)

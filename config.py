@@ -42,6 +42,36 @@ class GPTSovitsStyle(PluginConfigBase):
     prompt_language: str = Field(default="zh", description="参考音频语言")
     gpt_weights: str = Field(default="", description="GPT 模型权重路径（可选，动态切模型）")
     sovits_weights: str = Field(default="", description="SoVITS 模型权重路径（可选）")
+    languages: List[str] = Field(
+        default_factory=list,
+        description="该风格适用的语言（zh/ja/en/ko），留空表示通用；非空时按语言优先匹配",
+    )
+
+
+class AutoStyleRule(PluginConfigBase):
+    """自动语气匹配规则。"""
+
+    style: str = Field(default="", description="命中后使用的风格名")
+    pattern: str = Field(default="", description="正则表达式")
+    weight: int = Field(default=50, description="命中权重，多个规则同时命中时取最高")
+
+
+class AutoStyleConfig(PluginConfigBase):
+    """自动语气选择配置。"""
+
+    __ui_label__ = "自动语气"
+    __ui_icon__ = "wand"
+    __ui_order__ = 3
+
+    enabled: bool = Field(
+        default=True,
+        description="开启后，调用方未指定 style 时按文本内容自动选择语气",
+    )
+    fallback: str = Field(default="default", description="所有规则都未命中时使用的风格")
+    rules: List[AutoStyleRule] = Field(
+        default_factory=list,
+        description="自定义匹配规则（留空则使用插件内置规则）",
+    )
 
 
 class GPTSovitsConfig(PluginConfigBase):
@@ -53,9 +83,14 @@ class GPTSovitsConfig(PluginConfigBase):
 
     server: str = Field(default="http://127.0.0.1:9880", description="GPT-SoVITS 服务地址")
     timeout: int = Field(default=60, description="请求超时（秒）")
+    speed_factor: float = Field(default=1.0, description="语速倍率，小于 1 更慢（0.9 = 慢 10%）")
     styles: List[GPTSovitsStyle] = Field(
         default_factory=lambda: [GPTSovitsStyle()],
         description="语音风格配置列表（每个风格独立完整参数）",
+    )
+    auto_style: AutoStyleConfig = Field(
+        default_factory=AutoStyleConfig,
+        description="根据文本内容自动选择语气",
     )
 
 

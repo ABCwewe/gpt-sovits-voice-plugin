@@ -34,21 +34,72 @@ class GPTSovitsClient:
 
         return {style.name: style for style in self._config.styles if style.name}
 
+    def default_style_name(self) -> str:
+        """返回兜底风格名：优先名为 default/默认 的风格，否则取第一个。"""
+
+        styles = self.styles()
+        for name in ("default", "默认"):
+            if name in styles:
+                return name
+        if styles:
+            return next(iter(styles))
+        return ""
+
     def resolve_style(self, style: str, log_prefix: str) -> str:
-        """解析最终风格：精确命中配置则使用，否则（缺失/错误参数）回退 default。"""
+        """解析最终风格：精确命中配置则使用，否则回退到兜底风格。"""
 
         styles = self.styles()
         if style and style in styles:
             return style
+        fallback = self.default_style_name()
         if style:
-            logger.warning("%s 风格 '%s' 不存在，回退 default", log_prefix, style)
-        return "default"
+            logger.warning("%s 风格 '%s' 不存在，回退 %s", log_prefix, style, fallback)
+        return fallback
+
+    def resolve_by_language(
+        self,
+        lang: str,
+        style_name: str,
+        log_prefix: str,
+    ) -> str:
+        """按语言挑选风格。
+
+        规则：优先使用显式声明 ``languages`` 包含该语言、且风格名与当前风格
+        同名的风格（便于「默认」对应「日语」这类同名变体）；否则回退原风格。
+        """
+
+        styles = self.styles()
+        if not lang:
+            return style_name
+
+        # 1) 当前风格本身支持该语言，直接用
+        cur = styles.get(style_name)
+        if cur is not None and lang in (cur.languages or []):
+            return style_name
+
+        # 2) 名称形如「<风格>_<语言>」的变体，如 默认_ja / 兴奋_ja
+        for suffix in (f"_{lang}", f"-{lang}"):
+            candidate = f"{style_name}{suffix}"
+            if candidate in styles:
+                return candidate
+
+        # 3) 该语言的默认风格（如 默认_ja）
+        default_name = self.default_style_name()
+        for suffix in (f"_{lang}", f"-{lang}"):
+            candidate = f"{default_name}{suffix}"
+            if candidate in styles:
+                return candidate
+
+        # 4) 保持原风格（该语言没有专用模型时，用通用模型合成）
+        return style_name
+
+        return style_name
 
     async def synthesize(self, text: str, style_name: str, log_prefix: str) -> Optional[bytes]:
         """调用 GPT-SoVITS ``/tts`` 接口合成音频，失败返回 ``None``。"""
 
         styles = self.styles()
-        style = styles.get(style_name) or styles.get("default")
+        style = styles.get(style_name) or styles.get(self.default_style_name())
         if style is None:
             logger.error("%s 找不到可用风格配置", log_prefix)
             return None
@@ -66,6 +117,7 @@ class GPTSovitsClient:
             "ref_audio_path": style.refer_wav,
             "prompt_text": style.prompt_text,
             "prompt_lang": style.prompt_language,
+            "speed_factor": getattr(self._config, "speed_factor", 1.0),
         }
         tts_url = f"{self._config.server.rstrip('/')}/tts"
 

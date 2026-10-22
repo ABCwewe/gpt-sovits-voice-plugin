@@ -166,6 +166,16 @@ cd plugins/gpt-sovits-voice-plugin
 git init && git add -A && git commit -m "init"
 ```
 
+### 测试
+
+```bash
+python tests/test_units.py
+```
+
+覆盖音频有效性校验、文本清洗、语言检测、语气路由、语言路由、URL 转义、
+并发锁与死代码检查，共 51 项断言。测试不依赖 `maibot_sdk`，按文件路径
+直接加载被测模块。
+
 模块结构：
 
 | 文件 | 职责 |
@@ -173,9 +183,10 @@ git init && git add -A && git commit -m "init"
 | `plugin.py` | 插件入口、工具与命令定义、合成链路编排 |
 | `gpt_sovits.py` | GPT-SoVITS HTTP 客户端、模型切换、风格解析与语言路由 |
 | `style_router.py` | 语气规则引擎（正则匹配、权重排序、编译缓存） |
-| `utils.py` | 语言检测与文本清洗 |
+| `utils.py` | 语言检测、文本清洗与音频有效性校验 |
 | `audio.py` | 音频发送（base64 / 文件路径）与临时文件清理 |
 | `config.py` | Pydantic 配置模型 |
+| `tests/test_units.py` | 单元测试 |
 
 ## License
 

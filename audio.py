@@ -44,7 +44,7 @@ class AudioSender:
             )
             return True, f"已发送语音（风格: {style_name}）"
 
-        audio_path = await self._save_file(audio_data)
+        audio_path = await self._save_file(audio_data, ctx)
         if audio_path is None:
             return False, "保存音频文件失败"
 
@@ -54,22 +54,43 @@ class AudioSender:
         asyncio.create_task(self._cleanup_async(audio_path))
         return True, f"已发送语音（风格: {style_name}）"
 
-    async def _save_file(self, audio_data: bytes) -> Optional[str]:
+    def _resolve_output_dir(self, ctx: "PluginContext") -> str:
+        """确定音频落盘目录。
+
+        优先级：
+        1. 配置里的 ``audio_output_dir``（支持绝对路径），未配置时留空
+        2. Runner 分配的 ``ctx.paths.runtime_dir``——临时音频放这里最稳，
+           不用猜主程序装在哪，也不会污染插件仓库
+        3. 退化为项目根目录
+        """
+
+        configured = self._config.audio_output_dir.strip()
+        if configured:
+            return (
+                configured
+                if os.path.isabs(configured)
+                else os.path.join(self._project_root, configured)
+            )
+
+        # ctx.paths 由 Runner 按插件 ID 分配，比手搓路径可靠
+        paths = getattr(ctx, "paths", None)
+        runtime_dir = getattr(paths, "runtime_dir", None)
+        if runtime_dir:
+            return str(runtime_dir)
+
+        return self._project_root
+
+    async def _save_file(self, audio_data: bytes, ctx: "PluginContext") -> Optional[str]:
         """在后台线程写入音频文件，返回文件路径。"""
 
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._write_sync, audio_data)
+        output_dir = self._resolve_output_dir(ctx)
+        return await loop.run_in_executor(None, self._write_sync, audio_data, output_dir)
 
-    def _write_sync(self, audio_data: bytes) -> Optional[str]:
+    def _write_sync(self, audio_data: bytes, output_dir: str) -> Optional[str]:
         """同步写入音频文件（内部方法，在后台线程执行）。"""
 
-        output_dir = self._config.audio_output_dir.strip()
         if output_dir:
-            output_dir = (
-                output_dir
-                if os.path.isabs(output_dir)
-                else os.path.join(self._project_root, output_dir)
-            )
             try:
                 os.makedirs(output_dir, exist_ok=True)
             except OSError as exc:

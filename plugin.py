@@ -5,9 +5,10 @@
 - 用户通过 ``/tts`` 命令手动触发；
 - 风格在 ``config.toml`` 的 ``[[gpt_sovits.styles]]`` 中配置，每个风格独立
   拥有参考音频、提示文本、模型权重等全部参数；
-- 未指定风格时按文本内容自动选择语气，并按检测到的语言切换对应模型。
+- 未指定风格时按文本内容自动选择语气，并按检测到的语言切换对应模型；
+- 可配置概率语音，按比例把普通文字回复自动转成语音。
 
-Version: 1.1.0
+版本号以 ``_manifest.json`` 为准。
 """
 
 from pathlib import Path
@@ -350,7 +351,10 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         description="按配置概率把机器人的纯文本回复替换成语音",
         mode=HookMode.BLOCKING,
         order=HookOrder.LATE,
-        timeout_ms=120000,
+        # 与 gpt_sovits.timeout 的默认值同档。
+        # 这是阻塞钩子，超时越长出站消息被堵得越久，
+        # 所以不跟随用户把 timeout 调大，宁可在极端情况下放弃转语音。
+        timeout_ms=60000,
         error_policy=ErrorPolicy.SKIP,
     )
     async def random_voice_hook(self, **kwargs: Any) -> Optional[Dict[str, Any]]:

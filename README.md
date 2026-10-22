@@ -99,7 +99,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 
 ## 配置
 
-编辑 `plugins/gpt-sovits-voice-plugin/config.toml`（完整带注释模板见 `config.example.toml`）：
+编辑插件目录下的 `config.toml`（完整带注释模板见同目录 `config.example.toml`）：
 
 ```toml
 [general]
@@ -334,7 +334,7 @@ PYTHONIOENCODING=utf-8 python api_v2.py -a 127.0.0.1 -p 9880
 
 ```bash
 # 本插件为独立 Git 仓库
-cd plugins/gpt-sovits-voice-plugin
+cd plugins/CGl123_gpt-sovits-voice-plugin
 git init && git add -A && git commit -m "init"
 ```
 

@@ -4,13 +4,14 @@
 - LLM 通过 ``tts_voice`` 工具自主调用；
 - 用户通过 ``/tts`` 命令手动触发；
 - 风格在 ``config.toml`` 的 ``[[gpt_sovits.styles]]`` 中配置，每个风格独立
-  拥有参考音频、提示文本、模型权重等全部参数；风格不存在或未指定时回退 default。
+  拥有参考音频、提示文本、模型权重等全部参数；
+- 未指定风格时按文本内容自动选择语气，并按检测到的语言切换对应模型。
 
-Version: 1.0.0
+Version: 1.1.0
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncio
 import logging
@@ -23,7 +24,7 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
-from .style_router import route_style
+from .style_router import DEFAULT_RULES, route_style
 from .utils import clean_text, detect_language
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
@@ -236,13 +237,15 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                         raw_text,
                         available,
                         [r.model_dump() for r in auto.rules],
-                        auto.fallback or "default",
+                        auto.fallback or self._client.default_style_name(),
                     )
                     if picked in available:
                         style_name = picked
                         self.ctx.logger.info(
                             "%s 自动语气: %s（%s）", log_prefix, picked, reason,
                         )
+                        # 首次提示：内置规则引用了未配置的风格
+                        self._warn_missing_styles(available)
 
             # 按文本语言挑选对应语言的模型/参考音频
             lang = detect_language(raw_text)
@@ -283,6 +286,21 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
 
     # ─── 辅助 ────────────────────────────────────────────────────────────
 
+    def _warn_missing_styles(self, available: List[str]) -> None:
+        """首次发现内置规则引用了未配置的风格时，输出一次提示。"""
+
+        if getattr(self, "_missing_styles_warned", False):
+            return
+        self._missing_styles_warned = True
+        referenced = {name for name, _w, _p in DEFAULT_RULES}
+        missing = sorted(referenced - set(available))
+        if missing:
+            self.ctx.logger.warning(
+                "内置语气规则引用了未配置的风格 %s，这些规则不会生效；"
+                "如需启用，请在 config.toml 的 [[gpt_sovits.styles]] 中补充",
+                missing,
+            )
+
     async def _send_error(self, stream_id: str, message: str) -> None:
         """根据配置决定是否向用户发送错误提示。"""
 
@@ -293,17 +311,22 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         """发送帮助信息。"""
 
         styles = self._client.styles()
-        style_desc = "、".join(styles.keys()) if styles else "default"
+        style_desc = "、".join(styles.keys()) if styles else "（未配置）"
+        fallback = self._client.default_style_name() or "default"
+        auto = getattr(self.config.gpt_sovits, "auto_style", None)
+        auto_desc = "开启" if (auto is not None and auto.enabled) else "关闭"
         help_text = (
             "【GPT-SoVITS 语音插件帮助】\n\n"
             "📝 基本语法：\n"
             "/tts <文本> [-v <风格>]\n\n"
             "🎯 示例：\n"
             "/tts 你好世界\n"
-            "/tts 今天真开心 -v 流萤_活泼\n"
+            "/tts 今天真开心 -v 兴奋\n"
             "/gptsovits 用本地语音合成\n\n"
             f"🎤 可用风格：{style_desc}\n"
-            "（不指定风格时使用 default；风格不存在会自动回退 default）"
+            f"🧠 自动语气：{auto_desc}"
+            f"（不指定风格时按文本内容自动选择，未命中则用 {fallback}）\n"
+            f"🌏 多语言：检测到日语等语言时自动切换到对应语言模型（若已配置）"
         )
         await self.ctx.send.text(help_text, stream_id)
 

@@ -96,6 +96,51 @@ class AutoStyleConfig(PluginConfigBase):
     )
 
 
+class RandomVoiceConfig(PluginConfigBase):
+    """概率语音配置：按概率把普通文字回复自动转成语音。"""
+
+    __ui_label__ = "概率语音"
+    __ui_icon__ = "dice"
+    __ui_order__ = 4
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "开启后，机器人的普通文字回复会按 probability 概率自动转成语音发送。"
+            "关闭时行为不变，仅响应 LLM 工具调用与 /tts 命令"
+        ),
+    )
+    probability: float = Field(
+        default=0.3,
+        description="自动转语音的概率（0~1），0.3 表示约三成回复会变成语音",
+    )
+    decision_ttl: float = Field(
+        default=8.0,
+        description=(
+            "同一条回复在多少秒内复用同一个随机结果。"
+            "避免一条长回复被拆成多段时语音、文字混发"
+        ),
+    )
+    min_text_length: int = Field(
+        default=2,
+        description="短于此长度的回复不转语音（如「嗯」「好」）",
+    )
+    max_text_length: int = Field(
+        default=80,
+        description="长于此长度的回复不转语音（长文用语音不好听，也容易超时）",
+    )
+    skip_patterns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "命中这些正则的文本不转语音，如代码块、网址、表格。留空则使用内置规则"
+        ),
+    )
+    style: str = Field(
+        default="",
+        description="自动转语音时使用的风格，留空则走自动语气选择",
+    )
+
+
 class GPTSovitsConfig(PluginConfigBase):
     """GPT-SoVITS 后端配置。"""
 
@@ -122,3 +167,7 @@ class PluginConfig(PluginConfigBase):
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     gpt_sovits: GPTSovitsConfig = Field(default_factory=GPTSovitsConfig)
+    random_voice: RandomVoiceConfig = Field(
+        default_factory=RandomVoiceConfig,
+        description="概率语音：按概率自动把文字回复转成语音",
+    )

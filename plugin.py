@@ -14,16 +14,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import asyncio
+import base64
 import logging
 
 import aiohttp
 
-from maibot_sdk import Command, MaiBotPlugin, Tool
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
+from maibot_sdk.components import ErrorPolicy, HookMode, HookOrder
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
+from .random_voice import RandomVoiceDecider
 from .style_router import DEFAULT_RULES, route_style
 from .utils import clean_text, is_number_only
 
@@ -44,6 +47,7 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         self._session: Optional[aiohttp.ClientSession] = None
         self._client: Optional[GPTSovitsClient] = None
         self._audio: Optional[AudioSender] = None
+        self._decider = RandomVoiceDecider()
         self._missing_styles_warned = False
 
     # ─── 生命周期 ────────────────────────────────────────────────────────
@@ -130,6 +134,8 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         self._audio = AudioSender(self.config.general, self._project_root())
         # 配置可能改了权重路径，清空缓存以强制重新切换
         self._client.reset_model_state()
+        # 概率语音的随机结果也要清空，否则新旧概率会混在一起
+        self._decider.reset()
         self._missing_styles_warned = False
 
     # ─── 工具：LLM 自主调用 ──────────────────────────────────────────────
@@ -268,61 +274,9 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                 await self._send_error(stream_id, message)
                 return False, result
 
-            style_name = self._client.resolve_style(style, log_prefix)
-
-            # 纯数字文本可指定专用风格（播报数字的韵律与正常说话差异较大）
-            number_style_used = False
-            if not (style or "").strip():
-                auto = getattr(self.config.gpt_sovits, "auto_style", None)
-                if auto is not None and auto.number_style:
-                    if is_number_only(
-                        raw_text,
-                        allow_chinese=auto.number_style_include_chinese,
-                    ):
-                        available = list(self._client.styles().keys())
-                        if auto.number_style in available:
-                            style_name = auto.number_style
-                            number_style_used = True
-                            self.ctx.logger.info(
-                                "%s 检测到纯数字，使用风格: %s",
-                                log_prefix, style_name,
-                            )
-
-            # 调用方未指定风格时，按文本内容自动选择语气
-            if not (style or "").strip() and not number_style_used:
-                auto = getattr(self.config.gpt_sovits, "auto_style", None)
-                if auto is not None and auto.enabled:
-                    available = list(self._client.styles().keys())
-                    picked, reason = route_style(
-                        raw_text,
-                        available,
-                        [r.model_dump() for r in auto.rules],
-                        auto.fallback or self._client.default_style_name(),
-                    )
-                    if picked in available:
-                        style_name = picked
-                        self.ctx.logger.info(
-                            "%s 自动语气: %s（%s）", log_prefix, picked, reason,
-                        )
-                        # 首次提示：内置规则引用了未配置的风格
-                        self._warn_missing_styles(available)
-
-            # 按文本语言挑选对应语言的模型/参考音频
-            # 当前风格若显式指定了 language，则用它作为路由依据
-            lang = self._client.effective_language(style_name, raw_text)
-            lang_style = self._client.resolve_by_language(lang, style_name, log_prefix)
-            if lang_style != style_name:
-                self.ctx.logger.info(
-                    "%s 语言路由: %s -> %s（语言=%s）",
-                    log_prefix, style_name, lang_style, lang,
-                )
-                style_name = lang_style
-
-            # 合成前校验风格配置，避免把服务端的 400 直接抛给用户
-            config_error = self._client.validate_style(style_name)
-            if config_error:
-                self.ctx.logger.error("%s %s", log_prefix, config_error)
-                await self._send_error(stream_id, f"语音合成失败：{config_error}")
+            style_name = self._resolve_style_chain(raw_text, style, log_prefix)
+            if style_name is None:
+                await self._send_error(stream_id, "语音合成失败：配置不完整")
                 return False, "配置不完整"
 
             # 不分句，整段直接合成（分句交给合成服务智能处理）
@@ -362,6 +316,220 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             )
             await self._send_error(stream_id, "语音合成发生内部错误")
             return False, str(exc)
+
+    # ─── 概率语音：拦截出站文字并转成语音 ──────────────────────────────
+
+    @staticmethod
+    def _extract_plain_text(message: Dict[str, Any]) -> Optional[str]:
+        """从出站消息里取出纯文本内容。
+
+        只有「全部组件都是 text」时才返回文本，否则返回 ``None``：
+        带图片、语音、文件等组件的消息不应该被改写成语音。
+        """
+
+        raw_message = message.get("raw_message")
+        if not isinstance(raw_message, list) or not raw_message:
+            return None
+
+        parts: List[str] = []
+        for item in raw_message:
+            if not isinstance(item, dict):
+                return None
+            # reply 是引用元数据，不影响正文，跳过即可
+            if str(item.get("type", "")).strip().lower() == "reply":
+                continue
+            if item.get("type") != "text":
+                return None
+            parts.append(str(item.get("data") or ""))
+
+        text = "".join(parts).strip()
+        return text or None
+
+    def _build_voice_message(self, message: Dict[str, Any], audio_b64: str) -> Dict[str, Any]:
+        """把出站消息改写成一条语音消息。"""
+
+        updated = dict(message)
+        updated["raw_message"] = [
+            {
+                "type": "voice",
+                "data": audio_b64,
+                "binary_data_base64": audio_b64,
+            }
+        ]
+        return updated
+
+    @HookHandler(
+        "send_service.before_send",
+        name="gpt_sovits_random_voice",
+        description="按配置概率把机器人的纯文本回复替换成语音",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=120000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def random_voice_hook(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """出站拦截：按概率把纯文本回复改成语音。
+
+        返回 ``{"action": "continue", "modified_kwargs": {...}}`` 表示改写消息；
+        返回 ``None`` 表示不干预，消息原样发出。
+
+        任何一步判断不通过都直接放行文字，绝不因为插件故障吞掉用户消息。
+        """
+
+        config = getattr(self.config, "random_voice", None)
+        if config is None or not config.enabled:
+            return None
+
+        message = kwargs.get("message")
+        if not isinstance(message, dict):
+            return None
+
+        text = self._extract_plain_text(message)
+        if text is None:
+            return None
+
+        # 已经是语音消息的不要再套一层
+        raw_message = message.get("raw_message")
+        if isinstance(raw_message, list) and any(
+            isinstance(item, dict) and item.get("type") == "voice"
+            for item in raw_message
+        ):
+            return None
+
+        stream_id = str(kwargs.get("stream_id") or message.get("session_id") or "").strip()
+
+        suitable, reason = self._decider.text_is_suitable(
+            text,
+            config.min_text_length,
+            config.max_text_length,
+            config.skip_patterns or None,
+        )
+        if not suitable:
+            self.ctx.logger.debug("概率语音跳过（%s）：%s", reason, text[:30])
+            return None
+
+        should_convert, from_cache = self._decider.should_convert(
+            stream_id, config.probability, config.decision_ttl,
+        )
+        if not should_convert:
+            return None
+
+        log_prefix = f"[gpt_sovits_voice][random][{stream_id}]"
+
+        # 合成失败时回退发送原始文字，不让用户收不到回复
+        try:
+            audio_data = await self._synthesize_for_random(text, config.style, log_prefix)
+        except Exception as exc:  # 兜底：无论如何都不能吞掉消息
+            self.ctx.logger.error("%s 概率语音合成异常，回退文字：%s", log_prefix, exc)
+            return None
+
+        if audio_data is None:
+            self.ctx.logger.info("%s 概率语音合成失败，回退文字", log_prefix)
+            return None
+
+        audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+        updated_kwargs = dict(kwargs)
+        updated_kwargs["message"] = self._build_voice_message(message, audio_b64)
+
+        # QQ 不支持「引用 + 语音」组合，会返回成功回执但不实际投递，
+        # 所以转语音时必须去掉引用
+        if kwargs.get("set_reply"):
+            updated_kwargs["set_reply"] = False
+            updated_kwargs["reply_message_id"] = ""
+
+        self.ctx.logger.info(
+            "%s 已将文字回复转为语音（%d 字节，%s）%s",
+            log_prefix, len(audio_data), "缓存命中" if from_cache else "新掷骰",
+            f"，文本前 30 字：{text[:30]}",
+        )
+        return {"action": "continue", "modified_kwargs": updated_kwargs}
+
+    async def _synthesize_for_random(
+        self,
+        text: str,
+        style: str,
+        log_prefix: str,
+    ) -> Optional[bytes]:
+        """概率语音路径的合成：复用与 Tool/Command 相同的选风格逻辑。"""
+
+        if self._client is None:
+            return None
+
+        raw_text = clean_text(text)
+        if not raw_text:
+            return None
+
+        style_name = self._resolve_style_chain(raw_text, style, log_prefix)
+        if style_name is None:
+            return None
+
+        return await self._client.synthesize(raw_text, style_name, log_prefix)
+
+    def _resolve_style_chain(
+        self,
+        raw_text: str,
+        style: str,
+        log_prefix: str,
+    ) -> Optional[str]:
+        """按「纯数字 → 自动语气 → 语言路由」的顺序确定最终风格。
+
+        这段逻辑原本内嵌在 ``_handle`` 里，概率语音也要用，
+        提出来避免两处实现走偏。
+        """
+
+        if self._client is None:
+            return None
+
+        style_name = self._client.resolve_style(style, log_prefix)
+
+        number_style_used = False
+        if not (style or "").strip():
+            auto = getattr(self.config.gpt_sovits, "auto_style", None)
+            if auto is not None and auto.number_style:
+                if is_number_only(
+                    raw_text,
+                    allow_chinese=auto.number_style_include_chinese,
+                ):
+                    available = list(self._client.styles().keys())
+                    if auto.number_style in available:
+                        style_name = auto.number_style
+                        number_style_used = True
+                        self.ctx.logger.info(
+                            "%s 检测到纯数字，使用风格: %s", log_prefix, style_name,
+                        )
+
+        if not (style or "").strip() and not number_style_used:
+            auto = getattr(self.config.gpt_sovits, "auto_style", None)
+            if auto is not None and auto.enabled:
+                available = list(self._client.styles().keys())
+                picked, reason = route_style(
+                    raw_text,
+                    available,
+                    [r.model_dump() for r in auto.rules],
+                    auto.fallback or self._client.default_style_name(),
+                )
+                if picked in available:
+                    style_name = picked
+                    self.ctx.logger.info(
+                        "%s 自动语气: %s（%s）", log_prefix, picked, reason,
+                    )
+                    self._warn_missing_styles(available)
+
+        lang = self._client.effective_language(style_name, raw_text)
+        lang_style = self._client.resolve_by_language(lang, style_name, log_prefix)
+        if lang_style != style_name:
+            self.ctx.logger.info(
+                "%s 语言路由: %s -> %s（语言=%s）",
+                log_prefix, style_name, lang_style, lang,
+            )
+            style_name = lang_style
+
+        config_error = self._client.validate_style(style_name)
+        if config_error:
+            self.ctx.logger.error("%s %s", log_prefix, config_error)
+            return None
+
+        return style_name
 
     # ─── 辅助 ────────────────────────────────────────────────────────────
 

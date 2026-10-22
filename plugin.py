@@ -144,23 +144,22 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         "tts_voice",
         description=(
             "用语音回复（本地 GPT-SoVITS），让对话更生动亲切。"
-            "适合简短问候、活泼场景；用户明确要求语音时必须使用。"
-            "过长（>100字）或过短（<3字）请直接文字回复。"
-            "style 参数可选，不传则按文本内容自动选语气，常见风格：兴奋、吐槽、默认。"
+            "适合简短问候与活泼场景；用户明确要求语音时必须使用。"
+            "代码、长文（>100字）请直接用文字回复。"
         ),
         parameters=[
             ToolParameterInfo(
                 name="text",
                 param_type=ToolParamType.STRING,
-                description="要转换为语音的文本内容（必填）",
+                description="要转换为语音的文本（2~100字）",
                 required=True,
             ),
             ToolParameterInfo(
                 name="style",
                 param_type=ToolParamType.STRING,
                 description=(
-                    "语音风格（可选，不传则按文本内容自动选择；"
-                    "可用风格以 config.toml 的 styles 配置为准）"
+                    "语音风格，可选。不传则按文本内容自动选语气，"
+                    "常用：兴奋、吐槽、默认"
                 ),
                 required=False,
             ),

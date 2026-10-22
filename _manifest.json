@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.lbcheng1145.gpt-sovits-voice-plugin",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "plugin_type": "media",
   "name": "GPT-SoVITS 语音插件（优化版）",
   "description": "基于本地 GPT-SoVITS 服务的文本转语音插件。本版由 Lbcheng1145 基于 CGl123/gpt-sovits-voice-plugin（原作者 CGl123）优化而来，新增按内容自动选语气、按语言自动切换模型、纯数字专用风格、概率自动语音、语速控制、文本清洗、音频校验与配置校验等功能。注意：本插件与原版 CGl123.gpt-sovits-voice-plugin 功能重叠且共用同一套配置与命令，二者互斥，请勿同时安装。",

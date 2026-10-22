@@ -178,6 +178,9 @@ class GPTSovitsClient:
             "prompt_text": style.prompt_text,
             "prompt_lang": style.prompt_language,
             "speed_factor": getattr(self._config, "speed_factor", 1.0),
+            # 分段间隔：API 默认 0.3 秒会在分段之间插入纯静音，
+            # 静音前后伴有衰减尾音和硬起音，听感像颤音，置 0 消除
+            "fragment_interval": getattr(self._config, "fragment_interval", 0.0),
         }
         tts_url = f"{self._config.server.rstrip('/')}/tts"
 

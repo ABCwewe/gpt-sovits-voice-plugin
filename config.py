@@ -167,6 +167,19 @@ class GPTSovitsConfig(PluginConfigBase):
     server: str = Field(default="http://127.0.0.1:9880", description="GPT-SoVITS 服务地址")
     timeout: int = Field(default=60, description="请求超时（秒）")
     speed_factor: float = Field(default=1.0, description="语速倍率，小于 1 更慢（0.9 = 慢 10%）")
+    fragment_interval: float = Field(
+        default=0.0,
+        description="分段之间的静音间隔（秒）",
+        json_schema_extra={
+            "label": "分段间隔（秒）",
+            "hint": (
+                "GPT-SoVITS 会把长文本按标点切成多段分别合成，再用纯静音拼接。"
+                "间隔越大，句间停顿越空洞，还会在停顿前后产生衰减尾音和硬起音，听感像「颤音」。"
+                "建议保持 0"
+            ),
+            "placeholder": "0",
+        },
+    )
     styles: List[GPTSovitsStyle] = Field(
         default_factory=lambda: [GPTSovitsStyle()],
         description="语音风格配置列表（每个风格独立完整参数）",

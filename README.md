@@ -1,4 +1,4 @@
-# GPT-SoVITS 语音插件（二改版）
+# GPT-SoVITS 语音插件（优化版）
 
 基于本地 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 服务的 MaiBot 文本转语音插件。
 支持多种语音风格、按文本内容自动匹配语气、按语言自动切换模型；
@@ -10,7 +10,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 
 | | 插件 ID |
 |---|---|
-| **本插件（二改版）** | `github.lbcheng1145.gpt-sovits-voice-plugin` |
+| **本插件（优化版）** | `github.lbcheng1145.gpt-sovits-voice-plugin` |
 | 原版 | `CGl123.gpt-sovits-voice-plugin` |
 
 **两者功能重叠，不能同时启用**，原因：
@@ -31,12 +31,12 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 
 ## 来源说明
 
-本项目为**二次开发版本**，原项目：
+本项目基于以下项目优化：
 
 - 原仓库：[CGl123/gpt-sovits-voice-plugin](https://github.com/CGl123/gpt-sovits-voice-plugin)
 - 原作者：CGl123
 
-本仓库在其基础上修改，主要新增：
+在此基础上优化的主要内容：
 
 | 功能 | 说明 |
 |---|---|
@@ -48,7 +48,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 | 配置校验 | 配置缺失时给出明确指引，而非直接抛出服务端错误 |
 | 并发保护 | 权重切换与合成加锁，避免并发请求串音色 |
 
-同时修复了原版的若干问题，详见提交记录。
+同时修复了若干问题，详见提交记录。
 
 **本版本独立维护**，问题请反馈到[本仓库 Issues](https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/issues)。
 若不需要新增功能，建议直接使用原版。

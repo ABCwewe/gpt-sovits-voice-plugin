@@ -1,7 +1,7 @@
 """根据文本内容自动推断语音语气。
 
 优先使用配置中的规则（config.toml 的 [[gpt_sovits.auto_style.rules]]），
-未命中时回退到内置默认规则；都不命中则返回 default。
+未命中时回退到内置默认规则；都不命中则返回兜底风格。
 """
 
 import logging
@@ -15,31 +15,50 @@ logger = logging.getLogger("plugin.gpt_sovits_voice.style_router")
 DEFAULT_RULES: List[Tuple[str, int, str]] = [
     # 兴奋 / 欢呼：感叹号、欢呼词、正情绪爆点
     ("兴奋", 30, r"[!！]{2,}|[!！]$"),
-    ("兴奋", 40, r"(好耶|太棒|太强|牛啊|厉害|爽|冲|绝了|起飞|芜湖|哇+|耶+|哈哈哈+|嘿嘿)"),
-    ("兴奋", 25, r"(真的假的|不会吧|天呐|天啊|竟然|居然)[!！]?"),
+    ("兴奋", 40, r"(好耶|太棒|太强|牛啊|厉害|绝了|起飞|芜湖|哇+|耶+|哈哈哈+|嘿嘿)"),
+    ("兴奋", 25, r"(真的假的|不会吧|天呐|天啊|竟然|居然)"),
     # 吐槽 / 生气：不耐烦、质疑、负情绪
-    ("吐槽", 40, r"(无语|服了|烦死|烦人|搞什么|什么鬼|离谱|离谱|气死|离谱|扯|鬼知道)"),
+    ("吐槽", 40, r"(无语|服了|烦死|烦人|搞什么|什么鬼|离谱|气死|鬼知道)"),
     ("吐槽", 30, r"(你是不是|你在说什么|怎么可能|开什么玩笑|认真的吗)"),
-    ("吐槽", 25, r"(唉|啧|切|哼)[，,。.！!]?"),
+    ("吐槽", 25, r"(唉|啧|切|哼)"),
     # 撒娇 / 软萌：语气助词密集、拖音
     ("撒娇", 30, r"[～~]"),
     ("撒娇", 20, r"(嘛|呀|啦|哦|欸|诶)[。.！!]?$"),
 ]
 
+# 单个正则的最大长度，防止配置写入超长表达式
+MAX_PATTERN_LENGTH = 500
+# 编译缓存上限，避免热更新后旧正则无限堆积
+MAX_CACHE_SIZE = 256
+
 # 编译缓存
-_compiled: Dict[str, re.Pattern] = {}
+_compiled: Dict[str, Optional[re.Pattern]] = {}
 
 
 def _compile(pattern: str) -> Optional[re.Pattern]:
+    """编译正则，带缓存与长度保护。失败返回 None（结果也会缓存）。"""
+
     if pattern in _compiled:
         return _compiled[pattern]
-    try:
-        p = re.compile(pattern)
-        _compiled[pattern] = p
-        return p
-    except re.error as exc:
-        logger.warning("语气规则正则无效，已跳过: %s (%s)", pattern, exc)
-        return None
+
+    if len(pattern) > MAX_PATTERN_LENGTH:
+        logger.warning(
+            "语气规则正则过长（%d > %d），已跳过: %.50s...",
+            len(pattern), MAX_PATTERN_LENGTH, pattern,
+        )
+        result = None
+    else:
+        try:
+            result = re.compile(pattern)
+        except re.error as exc:
+            logger.warning("语气规则正则无效，已跳过: %.50s (%s)", pattern, exc)
+            result = None
+
+    # 简单的 FIFO 淘汰，避免无界增长
+    if len(_compiled) >= MAX_CACHE_SIZE:
+        _compiled.pop(next(iter(_compiled)), None)
+    _compiled[pattern] = result
+    return result
 
 
 def route_style(
@@ -54,27 +73,30 @@ def route_style(
         text: 待合成文本
         available: 当前可用的风格名列表
         custom_rules: 配置里的自定义规则，每项含 style/pattern/weight
-        default_style: 兜底风格
+        default_style: 兜底风格（若不在 available 中，自动改为第一个可用风格）
 
     Returns:
-        (风格名, 命中原因)；未命中返回 (default_style, "默认")
+        (风格名, 命中原因)
     """
 
     if not text:
-        return default_style, "空文本"
+        return _safe_fallback(default_style, available), "空文本"
 
     # 组装规则：自定义优先，其次内置
     rules: List[Tuple[str, int, str]] = []
     if custom_rules:
         for item in custom_rules:
             try:
-                rules.append((
-                    str(item.get("style", "")),
-                    int(item.get("weight", 50)),
-                    str(item.get("pattern", "")),
-                ))
-            except (TypeError, ValueError):
+                style = str(item.get("style", "")).strip()
+                pattern = str(item.get("pattern", "")).strip()
+                weight = int(item.get("weight", 50))
+            except (TypeError, ValueError, AttributeError):
                 continue
+            # 空风格名或空正则会匹配一切，直接跳过
+            if not style or not pattern:
+                logger.warning("跳过无效语气规则：style=%r pattern=%r", style, pattern)
+                continue
+            rules.append((style, weight, pattern))
     rules.extend(DEFAULT_RULES)
 
     scores: Dict[str, int] = {}
@@ -87,12 +109,32 @@ def route_style(
         regex = _compile(pattern)
         if regex is None:
             continue
-        if regex.search(text):
+        try:
+            matched = regex.search(text) is not None
+        except Exception as exc:  # 正则运行期异常（如递归过深）
+            logger.warning("语气规则执行失败，已跳过: %.50s (%s)", pattern, exc)
+            continue
+        if matched:
             scores[style_name] = scores.get(style_name, 0) + weight
             reasons.setdefault(style_name, pattern)
 
     if not scores:
-        return default_style, "未命中规则"
+        return _safe_fallback(default_style, available), "未命中规则"
 
-    best = max(scores, key=lambda k: scores[k])
+    # 权重相同时按风格名排序，保证结果稳定可复现
+    best = max(sorted(scores), key=lambda k: scores[k])
     return best, f"命中规则 {reasons[best]} (得分 {scores[best]})"
+
+
+def _safe_fallback(default_style: str, available: List[str]) -> str:
+    """确保兜底风格在可用列表中，否则取第一个可用风格。"""
+
+    if default_style in available:
+        return default_style
+    if available:
+        logger.warning(
+            "兜底风格 '%s' 不在可用列表 %s 中，改用 '%s'",
+            default_style, available, available[0],
+        )
+        return available[0]
+    return default_style

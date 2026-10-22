@@ -6,6 +6,29 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 
 > MaiBot SDK 2.x（`MaiBotPlugin` + `@Tool` / `@Command` + Pydantic 配置）。
 
+## ⚠️ 与原版互斥，请勿同时安装
+
+| | 插件 ID |
+|---|---|
+| **本插件（二改版）** | `github.lbcheng1145.gpt-sovits-voice-plugin` |
+| 原版 | `CGl123.gpt-sovits-voice-plugin` |
+
+**两者功能重叠，不能同时启用**，原因：
+
+- **命令冲突**：都注册了 `/tts`、`/voice`、`/gptsovits`，同时安装会导致命令重复注册
+- **工具冲突**：都声明了 `tts_voice` 工具，LLM 调用时无法确定用哪个
+- **配置目录同名**：都使用 `data/plugins/CGl123.gpt-sovits-voice-plugin` 存放音频
+- **重复合成**：若两个都响应同一条消息，会重复发语音
+
+**安装前请先卸载原版**，或反之。切换时：
+
+1. 在 MaiBot 插件管理中禁用/卸载已安装的那个
+2. 安装另一个
+3. 重载插件
+
+配置（`config.toml`）不能直接复用，因为两者的字段结构不同（本版新增 `auto_style`、`speed_factor`、`languages`）。
+请参照本仓库的 `config.example.toml` 重新配置。
+
 ## 来源说明
 
 本项目为**二次开发版本**，原项目：
@@ -27,7 +50,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 
 同时修复了原版的若干问题，详见提交记录。
 
-**本版本与原版互相独立**，问题请反馈到[本仓库 Issues](https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/issues)。
+**本版本独立维护**，问题请反馈到[本仓库 Issues](https://github.com/Lbcheng1145/gpt-sovits-voice-plugin/issues)。
 若不需要新增功能，建议直接使用原版。
 
 ## 功能

@@ -27,3 +27,8 @@ env/
 tts_*.wav
 tts_*.mp3
 tts_*.ogg
+
+# 本地备份文件
+*.bak
+*.bak-*
+config_back/

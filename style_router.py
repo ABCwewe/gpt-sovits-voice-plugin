@@ -65,7 +65,7 @@ def route_style(
     text: str,
     available: List[str],
     custom_rules: Optional[List[Dict]] = None,
-    default_style: str = "default",
+    default_style: str = "",
 ) -> Tuple[str, str]:
     """根据文本内容选择语气。
 
@@ -73,7 +73,8 @@ def route_style(
         text: 待合成文本
         available: 当前可用的风格名列表
         custom_rules: 配置里的自定义规则，每项含 style/pattern/weight
-        default_style: 兜底风格（若不在 available 中，自动改为第一个可用风格）
+        default_style: 兜底风格；为空或不在 available 中时，自动使用
+           第一个可用风格
 
     Returns:
         (风格名, 命中原因)
@@ -129,12 +130,13 @@ def route_style(
 def _safe_fallback(default_style: str, available: List[str]) -> str:
     """确保兜底风格在可用列表中，否则取第一个可用风格。"""
 
-    if default_style in available:
+    if default_style and default_style in available:
         return default_style
     if available:
-        logger.warning(
-            "兜底风格 '%s' 不在可用列表 %s 中，改用 '%s'",
-            default_style, available, available[0],
-        )
+        if default_style:
+            logger.warning(
+                "兜底风格 '%s' 不在可用列表 %s 中，改用 '%s'",
+                default_style, available, available[0],
+            )
         return available[0]
     return default_style

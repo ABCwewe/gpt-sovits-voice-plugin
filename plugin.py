@@ -44,11 +44,54 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         self._session: Optional[aiohttp.ClientSession] = None
         self._client: Optional[GPTSovitsClient] = None
         self._audio: Optional[AudioSender] = None
+        self._missing_styles_warned = False
 
     # ─── 生命周期 ────────────────────────────────────────────────────────
 
     async def on_load(self) -> None:
         """插件加载：创建会话与客户端，并打印风格概况。"""
+
+        await self._build_runtime()
+        self.ctx.logger.info(
+            "GPT-SoVITS 语音插件已加载，服务=%s，风格=%s",
+            self.config.gpt_sovits.server,
+            list(self._client.styles().keys()) if self._client else [],
+        )
+
+    async def on_unload(self) -> None:
+        """插件卸载：关闭 HTTP 会话。"""
+
+        await self._close_session()
+        self.ctx.logger.info("GPT-SoVITS 语音插件已卸载")
+
+    async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
+        """配置热更新回调。
+
+        重建客户端与会话，否则旧的超时、服务地址、风格列表不会生效。
+        """
+
+        del config_data
+        self.ctx.logger.info(
+            "GPT-SoVITS 语音插件配置已更新: scope=%s version=%s", scope, version,
+        )
+        await self._build_runtime()
+        self.ctx.logger.info(
+            "配置已重新加载：服务=%s，风格=%s",
+            self.config.gpt_sovits.server,
+            list(self._client.styles().keys()) if self._client else [],
+        )
+
+    async def _close_session(self) -> None:
+        """关闭当前 HTTP 会话（若存在）。"""
+
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+    async def _build_runtime(self) -> None:
+        """按当前配置重建会话、客户端与发送器。"""
+
+        await self._close_session()
 
         timeout = max(self.config.gpt_sovits.timeout, 10)
         self._session = aiohttp.ClientSession(
@@ -56,27 +99,9 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         )
         self._client = GPTSovitsClient(self._session, self.config.gpt_sovits)
         self._audio = AudioSender(self.config.general, self._project_root())
-        style_names = list(self._client.styles().keys())
-        self.ctx.logger.info(
-            "GPT-SoVITS 语音插件已加载，服务=%s，风格=%s",
-            self.config.gpt_sovits.server,
-            style_names or ["default"],
-        )
-
-    async def on_unload(self) -> None:
-        """插件卸载：关闭 HTTP 会话。"""
-
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self.ctx.logger.info("GPT-SoVITS 语音插件已卸载")
-
-    async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
-        """配置热更新回调。"""
-
-        del config_data
-        self.ctx.logger.info(
-            "GPT-SoVITS 语音插件配置已更新: scope=%s version=%s", scope, version,
-        )
+        # 配置可能改了权重路径，清空缓存以强制重新切换
+        self._client.reset_model_state()
+        self._missing_styles_warned = False
 
     # ─── 工具：LLM 自主调用 ──────────────────────────────────────────────
 
@@ -90,12 +115,12 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             "- 过长（>100字）或过短（<3字）的内容不适合语音，请直接文字回复\n"
             "\n【语气选择】\n"
             "- style 参数可选，不传时插件会按文本内容自动判断语气\n"
-            "- 你也可以主动指定以表达更准确的情绪：\n"
+            "- 你也可以主动指定以表达更准确的情绪，常见风格：\n"
             "  · 兴奋：表达惊喜、夸赞、欢呼时（如「好耶！」「太棒了吧」）\n"
             "  · 吐槽：表达无语、嫌弃、吐槽时（如「你在说什么啊」「服了」）\n"
-            "  · default：日常陈述、平淡对话\n"
-            "- 可用风格以 config.toml 的 [[gpt_sovits.styles]] 配置为准，新增风格可直接使用；"
-            "风格不存在会自动回退 default"
+            "  · 默认：日常陈述、平淡对话\n"
+            "- 实际可用风格以 config.toml 的 [[gpt_sovits.styles]] 为准；"
+            "风格不存在时会自动回退到默认风格"
         ),
         parameters=[
             ToolParameterInfo(
@@ -108,8 +133,8 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                 name="style",
                 param_type=ToolParamType.STRING,
                 description=(
-                    "语音风格（可选，不传则用 default；"
-                    "可用风格以 config.toml 的 styles 配置为准，风格不存在会自动回退 default）"
+                    "语音风格（可选，不传则按文本内容自动选择；"
+                    "可用风格以 config.toml 的 styles 配置为准）"
                 ),
                 required=False,
             ),
@@ -187,44 +212,32 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             # 先清洗不可见字符（零宽符等会导致 GPT-SoVITS 侧 GBK 编码失败）
             original = (text or "").strip()
             raw_text = clean_text(original)
-            if original and not raw_text:
-                self.ctx.logger.warning(
-                    "%s 文本仅含不可见字符，拒绝合成", log_prefix,
-                )
-                return False, "文本为空"
-            if len(raw_text) != len(original):
-                self.ctx.logger.info(
-                    "%s 已清洗 %d 个不可见字符", log_prefix, len(original) - len(raw_text),
-                )
             if not raw_text:
+                if original:
+                    self.ctx.logger.warning(
+                        "%s 文本仅含不可见字符，拒绝合成", log_prefix,
+                    )
                 return False, "文本为空"
+            if len(original) != len(raw_text):
+                self.ctx.logger.info(
+                    "%s 已清洗 %d 个不可见字符",
+                    log_prefix, len(original) - len(raw_text),
+                )
 
             min_length = self.config.general.min_text_length
             max_length = self.config.general.max_text_length
             text_length = len(raw_text)
 
-            # 过短文本（如单字）合成效果差，直接拒绝
-            if text_length < min_length:
-                self.ctx.logger.warning(
-                    "%s 文本长度 %d 小于限制 %d，拒绝合成",
-                    log_prefix, text_length, min_length,
-                )
-                await self._send_error(
-                    stream_id, f"文本过短（{text_length}字），无法合成语音",
-                )
-                return False, "文本过短"
-
-            # 超长文本有超时风险，直接拒绝
-            if text_length > max_length:
-                self.ctx.logger.warning(
-                    "%s 文本长度 %d 超过限制 %d，拒绝合成",
-                    log_prefix, text_length, max_length,
-                )
-                await self._send_error(
-                    stream_id,
-                    f"文本过长（{text_length}字），超过语音长度限制（{max_length}）",
-                )
-                return False, "文本过长"
+            if not min_length <= text_length <= max_length:
+                if text_length < min_length:
+                    message = f"文本过短（{text_length}字），无法合成语音"
+                    result = "文本过短"
+                else:
+                    message = f"文本过长（{text_length}字），超过语音长度限制（{max_length}）"
+                    result = "文本过长"
+                self.ctx.logger.warning("%s %s", log_prefix, message)
+                await self._send_error(stream_id, message)
+                return False, result
 
             style_name = self._client.resolve_style(style, log_prefix)
 
@@ -283,21 +296,33 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             )
             await self._send_error(stream_id, f"语音合成参数错误: {exc}")
             return False, str(exc)
+        except OSError as exc:
+            self.ctx.logger.error("%s TTS 文件系统错误: %s", log_prefix, exc)
+            await self._send_error(stream_id, f"语音合成文件错误: {exc}")
+            return False, str(exc)
+        except Exception as exc:  # 兜底，避免异常冒泡中断会话
+            self.ctx.logger.error(
+                "%s TTS 未预期错误: %s", log_prefix, exc, exc_info=True,
+            )
+            await self._send_error(stream_id, "语音合成发生内部错误")
+            return False, str(exc)
 
     # ─── 辅助 ────────────────────────────────────────────────────────────
 
     def _warn_missing_styles(self, available: List[str]) -> None:
         """首次发现内置规则引用了未配置的风格时，输出一次提示。"""
 
-        if getattr(self, "_missing_styles_warned", False):
+        if self._missing_styles_warned:
             return
         self._missing_styles_warned = True
+
+        # 只需关注用户已配置了部分语气、但内置规则还引用其它语气的情况
         referenced = {name for name, _w, _p in DEFAULT_RULES}
         missing = sorted(referenced - set(available))
         if missing:
-            self.ctx.logger.warning(
-                "内置语气规则引用了未配置的风格 %s，这些规则不会生效；"
-                "如需启用，请在 config.toml 的 [[gpt_sovits.styles]] 中补充",
+            self.ctx.logger.info(
+                "内置语气规则引用了未配置的风格 %s，对应规则不会生效"
+                "（如需启用请在 config.toml 的 [[gpt_sovits.styles]] 中补充）",
                 missing,
             )
 

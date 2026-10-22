@@ -67,6 +67,7 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
             frames = w.getnframes()
             rate = w.getframerate() or 1
             width = w.getsampwidth()
+            channels = w.getnchannels() or 1
             raw = w.readframes(frames)
     except (wave.Error, EOFError, struct.error) as exc:
         return False, f"无法解析为 wav: {exc}"
@@ -97,7 +98,20 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
     if not samples:
         return False, "无有效采样"
 
-    rms = math.sqrt(sum(v * v for v in samples) / len(samples)) / scale
+    # 立体声等多声道按帧求 RMS，避免声道间相位相消影响判定
+    step = max(1, channels)
+    frame_count = len(samples) // step
+    if frame_count == 0:
+        return False, "无有效采样"
+
+    total = 0.0
+    for i in range(frame_count):
+        base = i * step
+        for c in range(step):
+            v = samples[base + c]
+            total += v * v
+
+    rms = math.sqrt(total / (frame_count * step)) / scale
     if rms < MIN_AUDIO_RMS:
         return False, f"音量过低（rms={rms:.0f}，疑似静音）"
 

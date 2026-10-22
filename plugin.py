@@ -142,11 +142,7 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
 
     @Tool(
         "tts_voice",
-        description=(
-            "用语音回复（本地 GPT-SoVITS），让对话更生动亲切。"
-            "适合简短问候与活泼场景；用户明确要求语音时必须使用。"
-            "代码、长文（>100字）请直接用文字回复。"
-        ),
+        description="用语音回复，适合简短问候与活泼场景；用户明确要求语音时必须使用。",
         parameters=[
             ToolParameterInfo(
                 name="text",

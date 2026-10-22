@@ -25,7 +25,7 @@ from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
 from .style_router import DEFAULT_RULES, route_style
-from .utils import clean_text, detect_language
+from .utils import clean_text
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
 
@@ -290,11 +290,13 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                         self._warn_missing_styles(available)
 
             # 按文本语言挑选对应语言的模型/参考音频
-            lang = detect_language(raw_text)
+            # 当前风格若显式指定了 language，则用它作为路由依据
+            lang = self._client.effective_language(style_name, raw_text)
             lang_style = self._client.resolve_by_language(lang, style_name, log_prefix)
             if lang_style != style_name:
                 self.ctx.logger.info(
-                    "%s 语言路由: %s -> %s", log_prefix, style_name, lang_style,
+                    "%s 语言路由: %s -> %s（语言=%s）",
+                    log_prefix, style_name, lang_style, lang,
                 )
                 style_name = lang_style
 

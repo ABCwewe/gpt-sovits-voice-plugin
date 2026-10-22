@@ -6,15 +6,48 @@ import re
 import struct
 import wave
 from array import array
-from typing import Tuple
+from typing import Optional, Tuple
 
-# 语言检测正则
+# ─── 字符集 ──────────────────────────────────────────────────────────
+# 汉字（中日共用）
 _CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 _ENGLISH_PATTERN = re.compile(r"[a-zA-Z]")
 # 平假名 + 片假名（含长音符号）。中文文本不会出现假名，出现即可判定日语
 _KANA_PATTERN = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u30fc]")
 # 韩文
 _KOREAN_PATTERN = re.compile(r"[\uac00-\ud7af\u1100-\u11ff]")
+
+# 粤语独占字：这些字在普通话书面语中基本不用，可用于区分粤语与普通话。
+# 参考粤语常用字表，选取辨识度高的部分。
+_YUE_CHARS = frozenset(
+    "唔咁咗哋佢乜嘢咩嘅嗰嚟攰冇睇喺啱㗎冚嬲咁啲嗮嘞喎咁嘅㗎囉"
+    "係哋啲嘅嗰咁咗唔佢乜嘢嚟睇喺啱㗎冇嘢咩嬲冚攰"
+    "叻咁嗰啲嘢嘅佢唔咗哋乜嚟睇喺啱㗎冇咩嬲"
+    "嘅嗮嘞喎噉嚿嘥啱傾俾搵揾掟攞瞓睇㗎"
+)
+
+# 拉丁字母以外的常见文字系统（用于识别「非中英日韩粤」的语言）
+_SCRIPT_PATTERNS = {
+    "ru": re.compile(r"[\u0400-\u04ff]"),        # 西里尔字母
+    "th": re.compile(r"[\u0e00-\u0e7f]"),        # 泰文
+    "ar": re.compile(r"[\u0600-\u06ff]"),        # 阿拉伯文
+    "hi": re.compile(r"[\u0900-\u097f]"),        # 天城文
+    "el": re.compile(r"[\u0370-\u03ff]"),        # 希腊文
+}
+
+# 各语言代码的显示名（用于日志与错误提示）
+LANGUAGE_NAMES = {
+    "zh": "中文",
+    "ja": "日语",
+    "en": "英语",
+    "ko": "韩语",
+    "yue": "粤语",
+    "ru": "俄语",
+    "th": "泰语",
+    "ar": "阿拉伯语",
+    "hi": "印地语",
+    "el": "希腊语",
+}
 
 # 需要剔除的不可见/控制字符：
 # \u200b-\u200f 零宽字符与方向标记、\ufeff BOM、\u00ad 软连字符、
@@ -118,36 +151,71 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
     return True, f"{duration:.2f}s rms={rms:.0f}"
 
 
-def detect_language(text: str) -> str:
-    """检测文本语言，返回 ``zh`` / ``ja`` / ``en`` / ``ko``。
+def detect_language(text: str, fallback: str = "zh") -> str:
+    """检测文本语言，返回语言代码（``zh`` / ``ja`` / ``en`` / ``ko`` / ``yue`` 等）。
 
-    判定优先级：假名 > 韩文 > 英文 > 中文。
-    假名优先是关键：日语大量使用汉字，若按字符比例统计，
-    「今日はいい天気ですね」会被误判为中文。
+    判定优先级与依据：
+
+    1. **假名** → ``ja``
+       中文文本不会出现平假名/片假名，出现即判定日语。
+       这是解决「今日はいい天気ですね」被误判为中文的关键。
+    2. **韩文** → ``ko``
+       韩文字母（谚文）为韩语独有字符集。
+    3. **粤语独占字** → ``yue``
+       出现「唔 咁 咗 哋 佢 乜 嘢 嘅 嗰 嚟」等普通话不用的字时判为粤语。
+    4. **其他文字系统** → 对应语言
+       西里尔、泰文、阿拉伯文、天城文、希腊文等。
+    5. **纯拉丁字母** → ``en``
+    6. **汉字为主** → ``zh``
+    7. **无任何可识别字符** → ``fallback``
+
+    局限：中日共用汉字，纯汉字的日文（如人名「東雪蓮」）无法与技术区分，
+    会落入 ``zh``。需要精确控制时请在配置中用 ``language`` 显式指定。
+
+    Args:
+        text: 待检测文本
+        fallback: 无法判定时的返回值（默认 ``zh``）
+
+    Returns:
+        语言代码
     """
 
     if not text:
-        return "zh"
+        return fallback
 
-    # 出现假名即为日语（中文/英文文本中不会出现假名）
+    # 1) 假名 → 日语（最可靠，中文不会出现假名）
     if _KANA_PATTERN.search(text):
         return "ja"
 
+    # 2) 韩文 → 韩语
     if _KOREAN_PATTERN.search(text):
         return "ko"
 
+    # 3) 粤语独占字 → 粤语
+    yue_hits = sum(1 for ch in text if ch in _YUE_CHARS)
+    if yue_hits:
+        # 至少命中 1 个字即判定，因为这些字普通话几乎不用
+        return "yue"
+
+    # 4) 其他文字系统
+    for lang, pattern in _SCRIPT_PATTERNS.items():
+        if pattern.search(text):
+            return lang
+
+    # 5) 统计汉字与拉丁字母数量
     chinese_chars = len(_CHINESE_PATTERN.findall(text))
     english_chars = len(_ENGLISH_PATTERN.findall(text))
     total = chinese_chars + english_chars
 
+    # 6) 无汉字无字母（纯数字/符号）→ 无法判定
     if total == 0:
-        return "zh"
+        return fallback
 
-    # 无汉字、英文占绝大多数 -> 英语
-    if chinese_chars == 0 and english_chars > 0:
+    # 7) 纯拉丁字母 → 英语
+    if chinese_chars == 0:
         return "en"
 
-    # 中文为主
+    # 8) 有汉字，按占比区分中英混排
     if chinese_chars / total > 0.3:
         return "zh"
 

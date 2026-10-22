@@ -137,6 +137,20 @@ class GPTSovitsClient:
         # 4) 保持原风格
         return style_name
 
+    def effective_language(self, style_name: str, text: str) -> str:
+        """返回该风格下实际使用的语言。
+
+        风格显式配置 ``language`` 时直接返回，否则自动检测。
+        语言路由与合成请求应共用此结果，避免两处判定不一致。
+        """
+
+        style = self.styles().get(style_name)
+        if style is not None:
+            forced = (getattr(style, "language", "") or "").strip()
+            if forced:
+                return forced
+        return detect_language(text)
+
     async def synthesize(self, text: str, style_name: str, log_prefix: str) -> Optional[bytes]:
         """调用 GPT-SoVITS ``/tts`` 接口合成音频，失败返回 ``None``。
 
@@ -149,9 +163,17 @@ class GPTSovitsClient:
             logger.error("%s 找不到可用风格配置", log_prefix)
             return None
 
+        # 风格显式指定语言时优先使用，否则自动检测
+        text_lang = self.effective_language(style_name, text)
+        forced = (getattr(style, "language", "") or "").strip()
+        logger.info(
+            "%s 合成语言: %s（%s）",
+            log_prefix, text_lang, "风格指定" if forced else "自动检测",
+        )
+
         request_data = {
             "text": text,
-            "text_lang": detect_language(text),
+            "text_lang": text_lang,
             "ref_audio_path": style.refer_wav,
             "prompt_text": style.prompt_text,
             "prompt_lang": style.prompt_language,

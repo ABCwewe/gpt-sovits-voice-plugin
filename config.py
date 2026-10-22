@@ -44,7 +44,17 @@ class GPTSovitsStyle(PluginConfigBase):
     sovits_weights: str = Field(default="", description="SoVITS 模型权重路径（可选）")
     languages: List[str] = Field(
         default_factory=list,
-        description="该风格适用的语言（zh/ja/en/ko），留空表示通用；非空时按语言优先匹配",
+        description=(
+            "该风格适用的语言列表（zh/ja/en/ko/yue），留空表示通用；"
+            "非空时按检测到的语言优先匹配"
+        ),
+    )
+    language: str = Field(
+        default="",
+        description=(
+            "强制指定合成语言，跳过自动检测（如 zh/ja/en/ko/yue）。"
+            "留空则自动检测。适用于纯汉字日文等无法自动区分的场景"
+        ),
     )
 
 

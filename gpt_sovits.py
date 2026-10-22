@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 import aiohttp
 
 from .config import GPTSovitsConfig, GPTSovitsStyle
-from .utils import detect_language, is_valid_audio
+from .utils import detect_language, is_valid_audio, is_language_supported, supported_languages, version_from_weights, is_text_readable_as
 
 logger = logging.getLogger("plugin.gpt_sovits_voice.gpt_sovits")
 
@@ -166,6 +166,25 @@ class GPTSovitsClient:
         # 风格显式指定语言时优先使用，否则自动检测
         text_lang = self.effective_language(style_name, text)
         forced = (getattr(style, "language", "") or "").strip()
+
+        # 底模不支持该语言时直接拒绝，避免 API 返回 400 或产出空白音频
+        version = version_from_weights(getattr(style, "sovits_weights", "") or "")
+        if not is_language_supported(text_lang, version):
+            if is_text_readable_as(text, "zh"):
+                # 拉丁字母等可用中文模型勉强读出，回退中文
+                logger.warning(
+                    "%s 语言 %s 不被底模 %s 支持（支持: %s），改用 zh",
+                    log_prefix, text_lang, version or "默认",
+                    sorted(supported_languages(version)),
+                )
+                text_lang = "zh"
+            else:
+                logger.warning(
+                    "%s 语言 %s 不被底模 %s 支持，且文本用中文模型无法读出，跳过合成",
+                    log_prefix, text_lang, version or "默认",
+                )
+                return None
+
         logger.info(
             "%s 合成语言: %s（%s）",
             log_prefix, text_lang, "风格指定" if forced else "自动检测",

@@ -155,6 +155,21 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
 _IGNORABLE_SYMBOLS = re.compile(r"[\s\.,!?;:'\"()\[\]{}<>@#$%^&*\-_=+~`|\\/，。！？；：、（）【】《》「」『』…—·]")
 
 # 阿拉伯数字与中文数字
+# GPT-SoVITS 各底模实际支持的语言集合。
+# v2ProPlus / v2Pro 只支持 zh/en/ja/yue，ko 能过参数校验但内部会崩，
+# ru/fr/de 等 API 直接返回 not supported。
+SUPPORTED_LANGUAGES_BY_VERSION = {
+    "v2ProPlus": {"zh", "en", "ja", "yue"},
+    "v2Pro": {"zh", "en", "ja", "yue"},
+    "v2": {"zh", "en", "ja", "ko", "yue"},
+    "v1": {"zh", "en", "ja", "ko", "yue"},
+    "v3": {"zh", "en", "ja", "ko", "yue"},
+    "v4": {"zh", "en", "ja", "ko", "yue"},
+}
+
+# 无法从权重路径推断版本时的安全集合
+DEFAULT_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "yue"}
+
 _ARABIC_DIGITS = re.compile(r"[0-9]")
 _CHINESE_DIGITS = re.compile(r"[零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟]")
 
@@ -292,3 +307,81 @@ def detect_language(text: str, fallback: str = "zh") -> str:
         return "zh"
 
     return "en" if english_chars / total > 0.8 else "zh"
+def version_from_weights(sovits_weights: str) -> str:
+    """从 SoVITS 权重路径推断底模版本，用于判断支持哪些语言。"""
+
+    path = (sovits_weights or "").lower().replace("\\", "/")
+    for ver in ("v2proplus", "v2pro", "v5turbo", "v5dev", "v4", "v3"):
+        if ver in path:
+            return {
+                "v2proplus": "v2ProPlus",
+                "v2pro": "v2Pro",
+                "v5turbo": "v5turbo",
+                "v5dev": "v5dev",
+                "v4": "v4",
+                "v3": "v3",
+            }[ver]
+    return ""
+
+
+def supported_languages(version: str | None = None) -> set:
+    """返回指定底模支持的语言集合。"""
+
+    if version and version in SUPPORTED_LANGUAGES_BY_VERSION:
+        return SUPPORTED_LANGUAGES_BY_VERSION[version]
+    return set(DEFAULT_SUPPORTED_LANGUAGES)
+
+
+def is_language_supported(lang: str, version: str | None = None) -> bool:
+    """判断语言是否被底模支持。"""
+
+    if not lang:
+        return False
+    return lang.lower() in supported_languages(version)
+
+
+# 各语言「只有该文字系统才读得出音」的字符集。
+# 用中文/英文模型硬读韩文、俄文等，TTS 只会产出接近空白的音频，
+# 所以这类文本直接判定为不可朗读，而不是回退后生成垃圾音频。
+_SCRIPT_ONLY_CHARS = {
+    "ko": re.compile(r"[\uac00-\ud7af\u1100-\u11ff]"),   # 谚文
+    "ru": re.compile(r"[\u0400-\u04ff]"),                # 西里尔
+    "ar": re.compile(r"[\u0600-\u06ff]"),                # 阿拉伯
+    "th": re.compile(r"[\u0e00-\u0e7f]"),                # 泰文
+    "hi": re.compile(r"[\u0900-\u097f]"),                # 天城文
+    "el": re.compile(r"[\u0370-\u03ff]"),                # 希腊
+}
+
+
+def is_text_readable_as(text: str, lang: str) -> bool:
+    """判断 text 能否用 ``lang`` 的模型读出声。
+
+    拉丁字母文本（英/法/德/西等）用带拉丁音素的模型都能勉强读出，
+    但谚文、西里尔、阿拉伯、泰文、天城文、希腊文这类文字，
+    换成中文/英文模型后完全读不出音，强行合成只会得到空白音频。
+
+    Args:
+        text: 待朗读文本
+        lang: 目标语言代码
+
+    Returns:
+        是否可朗读
+    """
+
+    if not text or not lang:
+        return False
+
+    # 目标语言自身就是这种文字，当然可读
+    if lang in _SCRIPT_ONLY_CHARS:
+        return True
+
+    letters = len(re.findall(r"[^\W\d_]", text, re.UNICODE))
+    if letters == 0:
+        return True
+
+    for script_lang, pattern in _SCRIPT_ONLY_CHARS.items():
+        hits = len(pattern.findall(text))
+        if hits and hits >= max(1, letters * 0.15):
+            return False
+
+    return True

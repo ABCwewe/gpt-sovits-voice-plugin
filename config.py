@@ -134,10 +134,26 @@ class RandomVoiceConfig(PluginConfigBase):
         description=(
             "命中这些正则的文本不转语音，如代码块、网址、表格。留空则使用内置规则"
         ),
+        json_schema_extra={
+            "label": "不转语音的规则（正则）",
+            "hint": (
+                "留空 = 使用内置规则（自动跳过代码块、网址、表格、列表、HTML、Markdown 链接）。"
+                "注意：一旦填写，内置规则会被完全替换，不会追加。"
+            ),
+            "placeholder": r"例如 ``` 或 https?://\S+",
+        },
     )
     style: str = Field(
         default="",
         description="自动转语音时使用的风格，留空则走自动语气选择",
+        json_schema_extra={
+            "label": "随机语音使用的风格",
+            "hint": (
+                "留空 = 按文本内容自动判断语气（推荐）。"
+                "填写则固定使用该风格，值需与 [[gpt_sovits.styles]] 的 name 一致，如「默认」。"
+            ),
+            "placeholder": "留空则自动选择，如 默认",
+        },
     )
 
 

@@ -1,0 +1,100 @@
+# GPT-SoVITS 语音插件配置模板
+#
+# 使用方法：
+#   1. 复制本文件为 config.toml
+#   2. 按注释填写 refer_wav / prompt_text / 模型权重
+#   3. 重载插件
+#
+# 注意：config.toml 已被 .gitignore 忽略，不会提交到仓库。
+
+[plugin]
+enabled = true
+config_version = "1.1.0"
+
+[general]
+# 文本最小长度，过短（如单字）合成效果差，低于此值拒绝合成
+min_text_length = 2
+# 文本最大长度，超过有超时风险，拒绝合成
+max_text_length = 200
+# true = base64 走 IPC；false = 文件路径 voiceurl
+use_base64_audio = true
+# 音频输出目录（相对项目根目录或绝对路径）
+audio_output_dir = "data/plugins/CGl123.gpt-sovits-voice-plugin"
+# 合成失败时是否向用户发送错误提示
+send_error_messages = true
+
+[gpt_sovits]
+# GPT-SoVITS API 服务地址（不是 WebUI 的端口）
+server = "http://127.0.0.1:9880"
+timeout = 60
+# 语速倍率：1.0 为原速，小于 1 更慢（0.9 = 慢 10%），大于 1 更快
+speed_factor = 1.0
+
+# ─────────────────────────────────────────────────────────────
+# 自动语气：调用方未指定 style 时，按文本内容自动选择语气
+# ─────────────────────────────────────────────────────────────
+[gpt_sovits.auto_style]
+# 关闭后，未指定 style 时固定使用 fallback
+enabled = true
+# 所有规则都未命中时使用的风格（需存在于下方 styles 中）
+fallback = "default"
+
+# 自定义匹配规则（可选，可写多条）
+# 自定义规则优先于插件内置规则，weight 越大优先级越高
+#
+# [[gpt_sovits.auto_style.rules]]
+# style = "兴奋"                 # 命中后使用的风格名
+# pattern = "(抽到|出货|金了)"    # Python 正则表达式，留空会被忽略
+# weight = 60                    # 命中权重
+
+# ─────────────────────────────────────────────────────────────
+# 语音风格：每个风格是完整独立的一套参数
+# ─────────────────────────────────────────────────────────────
+
+# 必填项说明：
+#   refer_wav    参考音频路径（3~10 秒、单句、干净无 BGM 的人声）
+#   prompt_text  参考音频中实际说的内容，必须与音频逐字对应
+#   prompt_language 参考音频的语言（zh / ja / en / ko / yue）
+#
+# 可选项说明：
+#   gpt_weights    GPT 模型权重（相对 GPT-SoVITS 根目录），留空则用服务端当前模型
+#   sovits_weights SoVITS 模型权重，留空则用服务端当前模型
+#   languages      该风格适用的语言列表，留空表示通用
+
+[[gpt_sovits.styles]]
+name = "default"
+refer_wav = ""                      # ← 必填，例如 "D:/vioce/ref.wav"
+prompt_text = ""                    # ← 必填，例如 "今天天气不错，我们出去走走吧。"
+prompt_language = "zh"
+gpt_weights = ""                    # 可选，例如 "GPT_weights_v2ProPlus/model-e12.ckpt"
+sovits_weights = ""                 # 可选，例如 "SoVITS_weights_v2ProPlus/model_e10.pth"
+
+# ─────────────────────────────────────────────────────────────
+# 多语言示例：检测到日语时自动切换到 default_ja
+# 命名规则为 <风格名>_<语言代码>，也可用 <风格名>-<语言代码>
+# ─────────────────────────────────────────────────────────────
+# [[gpt_sovits.styles]]
+# name = "default_ja"
+# languages = ["ja"]
+# refer_wav = "D:/vioce/ref_ja.wav"
+# prompt_text = "おはようございます、今日もいい天気ですね。"
+# prompt_language = "ja"
+# gpt_weights = "GPT_weights_v2ProPlus/model_ja-e12.ckpt"
+# sovits_weights = "SoVITS_weights_v2ProPlus/model_ja_e10.pth"
+
+# ─────────────────────────────────────────────────────────────
+# 多语气示例：配合自动语气规则使用
+# ─────────────────────────────────────────────────────────────
+# [[gpt_sovits.styles]]
+# name = "兴奋"
+# languages = ["zh"]
+# refer_wav = "D:/vioce/ref_excited.wav"
+# prompt_text = "好耶！这个真的太棒了！"
+# prompt_language = "zh"
+#
+# [[gpt_sovits.styles]]
+# name = "吐槽"
+# languages = ["zh"]
+# refer_wav = "D:/vioce/ref_complain.wav"
+# prompt_text = "你在说什么啊，完全听不懂。"
+# prompt_language = "zh"

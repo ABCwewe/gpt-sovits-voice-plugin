@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import urllib.parse
 from typing import Dict, Optional, Tuple
 
@@ -58,6 +59,43 @@ class GPTSovitsClient:
         if style:
             logger.warning("%s 风格 '%s' 不存在，回退 %s", log_prefix, style, fallback)
         return fallback
+
+    def validate_style(self, style_name: str) -> Optional[str]:
+        """检查风格配置是否可用，返回错误说明（可用时返回 None）。
+
+        首次安装时 SDK 会自动生成一份占位配置（``refer_wav`` 为空），
+        直接调用合成只会从服务端拿到 400，用户无从得知要补什么。
+        这里提前拦下并给出明确指引。
+        """
+
+        style = self.styles().get(style_name)
+        if style is None:
+            return (
+                f"找不到风格 '{style_name}'，请检查 config.toml 的 "
+                f"[[gpt_sovits.styles]] 配置"
+            )
+
+        missing = []
+        if not (style.refer_wav or "").strip():
+            missing.append("refer_wav（参考音频路径）")
+        if not (style.prompt_text or "").strip():
+            missing.append("prompt_text（参考音频对应的文本）")
+
+        if missing:
+            return (
+                f"风格 '{style_name}' 尚未配置 {' 和 '.join(missing)}。"
+                f"请在 config.toml 的 [[gpt_sovits.styles]] 中补齐后重试；"
+                f"可参考同目录下的 config.example.toml"
+            )
+
+        # 参考音频文件不存在时也提前报错，避免服务端返回难懂的异常
+        if not os.path.exists(style.refer_wav):
+            return (
+                f"风格 '{style_name}' 的参考音频不存在：{style.refer_wav}，"
+                f"请检查路径是否正确"
+            )
+
+        return None
 
     def resolve_by_language(
         self,

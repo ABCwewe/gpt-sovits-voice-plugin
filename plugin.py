@@ -57,6 +57,35 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             self.config.gpt_sovits.server,
             list(self._client.styles().keys()) if self._client else [],
         )
+        self._check_config_ready()
+
+    def _check_config_ready(self) -> None:
+        """首次加载时检查配置是否可用，配置缺失时给出明确引导。"""
+
+        if self._client is None:
+            return
+
+        broken = []
+        for name in self._client.styles():
+            err = self._client.validate_style(name)
+            if err:
+                broken.append((name, err))
+
+        if not broken:
+            return
+
+        self.ctx.logger.warning(
+            "配置尚未完成：%d/%d 个风格缺少必要参数，合成会失败",
+            len(broken), len(self._client.styles()),
+        )
+        for name, err in broken:
+            self.ctx.logger.warning("  风格 %s：%s", name, err)
+        self.ctx.logger.warning(
+            "请编辑插件目录下的 config.toml 补齐 refer_wav 与 prompt_text；"
+            "可参考同目录的 config.example.toml。"
+            "另外请确认识别 GPT-SoVITS 服务已在 %s 启动",
+            self.config.gpt_sovits.server,
+        )
 
     async def on_unload(self) -> None:
         """插件卸载：关闭 HTTP 会话。"""
@@ -268,6 +297,13 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                     "%s 语言路由: %s -> %s", log_prefix, style_name, lang_style,
                 )
                 style_name = lang_style
+
+            # 合成前校验风格配置，避免把服务端的 400 直接抛给用户
+            config_error = self._client.validate_style(style_name)
+            if config_error:
+                self.ctx.logger.error("%s %s", log_prefix, config_error)
+                await self._send_error(stream_id, f"语音合成失败：{config_error}")
+                return False, "配置不完整"
 
             # 不分句，整段直接合成（分句交给合成服务智能处理）
             audio_data = await self._client.synthesize(raw_text, style_name, log_prefix)

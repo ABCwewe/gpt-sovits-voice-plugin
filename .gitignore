@@ -20,6 +20,8 @@ env/
 
 # 临时文件
 *.log
+*.log.jsonl
+logs/
 *.tmp
 .DS_Store
 

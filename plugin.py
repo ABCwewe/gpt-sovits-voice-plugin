@@ -25,7 +25,7 @@ from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
 from .style_router import DEFAULT_RULES, route_style
-from .utils import clean_text
+from .utils import clean_text, is_number_only
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
 
@@ -270,8 +270,26 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
 
             style_name = self._client.resolve_style(style, log_prefix)
 
-            # 调用方未指定风格时，按文本内容自动选择语气
+            # 纯数字文本可指定专用风格（播报数字的韵律与正常说话差异较大）
+            number_style_used = False
             if not (style or "").strip():
+                auto = getattr(self.config.gpt_sovits, "auto_style", None)
+                if auto is not None and auto.number_style:
+                    if is_number_only(
+                        raw_text,
+                        allow_chinese=auto.number_style_include_chinese,
+                    ):
+                        available = list(self._client.styles().keys())
+                        if auto.number_style in available:
+                            style_name = auto.number_style
+                            number_style_used = True
+                            self.ctx.logger.info(
+                                "%s 检测到纯数字，使用风格: %s",
+                                log_prefix, style_name,
+                            )
+
+            # 调用方未指定风格时，按文本内容自动选择语气
+            if not (style or "").strip() and not number_style_used:
                 auto = getattr(self.config.gpt_sovits, "auto_style", None)
                 if auto is not None and auto.enabled:
                     available = list(self._client.styles().keys())

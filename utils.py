@@ -151,6 +151,78 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
     return True, f"{duration:.2f}s rms={rms:.0f}"
 
 
+# 需要忽略的符号（判断「纯数字」时不计入内容）
+_IGNORABLE_SYMBOLS = re.compile(r"[\s\.,!?;:'\"()\[\]{}<>@#$%^&*\-_=+~`|\\/，。！？；：、（）【】《》「」『』…—·]")
+
+# 阿拉伯数字与中文数字
+_ARABIC_DIGITS = re.compile(r"[0-9]")
+_CHINESE_DIGITS = re.compile(r"[零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟]")
+
+# 数字相关的常见单位与量词（判断时视作数字内容的一部分）
+# 只收录「数字+单位」本身即构成完整语义的词，
+# 不含「个/位/名」等过于宽泛的量词（避免「第3个」被误判）
+_NUMBER_UNITS = re.compile(
+    r"[年月日号点分秒元块毛角%‰°℃℉]"
+    r"|[线路楼层栋期届轮次条张]"
+    r"|(?:公斤|千克|克|毫克|吨|米|厘米|毫米|公里|千米|升|毫升)"
+    r"|(?:美元|欧元|日元|港币|人民币)"
+    r"|(?:小时|分钟|秒钟|个月|星期|礼拜|工作日)"
+    r"|(?:上午|下午|中午|凌晨|晚上|早上)"
+)
+
+
+def is_number_only(text: str, allow_chinese: bool = True) -> bool:
+    """判断文本是否只由数字构成（可含标点、符号、数字单位）。
+
+    用于决定纯数字内容走哪个模型——播报数字与正常说话的韵律差异较大，
+    单独指定模型往往效果更好。
+
+    Args:
+        text: 待判断文本
+        allow_chinese: 是否把中文数字（一二三、十、百等）也算作数字
+
+    Returns:
+        是否为纯数字文本
+
+    Examples:
+        >>> is_number_only("12345")
+        True
+        >>> is_number_only("1,234.56 元")
+        True
+        >>> is_number_only("2024年10月22日")
+        True
+        >>> is_number_only("一百二十三")
+        True
+        >>> is_number_only("今天123")
+        False
+    """
+
+    if not text:
+        return False
+
+    # 去掉标点、符号、空白
+    stripped = _IGNORABLE_SYMBOLS.sub("", text)
+    if not stripped:
+        # 全是符号，视为非数字内容（交由上层拒绝或走默认）
+        return False
+
+    # 去掉数字单位
+    core = _NUMBER_UNITS.sub("", stripped)
+    if not core:
+        return False
+
+    # 剩余部分必须全是数字
+    digits = _ARABIC_DIGITS.findall(core)
+    if allow_chinese:
+        digits += _CHINESE_DIGITS.findall(core)
+
+    if not digits:
+        return False
+
+    # 数字数量应覆盖剩余字符（允许小数点、负号等已被忽略的符号）
+    return len(digits) == len(core)
+
+
 def detect_language(text: str, fallback: str = "zh") -> str:
     """检测文本语言，返回语言代码（``zh`` / ``ja`` / ``en`` / ``ko`` / ``yue`` 等）。
 

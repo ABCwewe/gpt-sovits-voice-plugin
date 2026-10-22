@@ -75,12 +75,24 @@ class AutoStyleConfig(PluginConfigBase):
 
     enabled: bool = Field(
         default=True,
-        description="开启后，调用方未指定 style 时按文本内容自动选择语气",
+        description="开启后，调用方未指定 style 时按文本内容自动选择风格",
     )
     fallback: str = Field(default="default", description="所有规则都未命中时使用的风格")
     rules: List[AutoStyleRule] = Field(
         default_factory=list,
         description="自定义匹配规则（留空则使用插件内置规则）",
+    )
+    number_style: str = Field(
+        default="",
+        description=(
+            "纯数字文本使用的风格（如价格、时间、电话号码）。"
+            "留空则按正常流程处理。播报数字与说话的韵律差异较大，"
+            "指定专用风格往往效果更好"
+        ),
+    )
+    number_style_include_chinese: bool = Field(
+        default=True,
+        description="判断纯数字时，是否把中文数字（一二三、十百千等）也算作数字",
     )
 
 

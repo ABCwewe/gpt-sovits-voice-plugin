@@ -9,7 +9,14 @@ from typing import Dict, Optional, Tuple
 import aiohttp
 
 from .config import GPTSovitsConfig, GPTSovitsStyle
-from .utils import detect_language, is_valid_audio, is_language_supported, supported_languages, version_from_weights, is_text_readable_as
+from .utils import (
+    detect_language,
+    is_language_supported,
+    is_text_readable_as,
+    is_valid_audio,
+    resolve_version,
+    supported_languages,
+)
 
 logger = logging.getLogger("plugin.gpt_sovits_voice.gpt_sovits")
 
@@ -151,6 +158,19 @@ class GPTSovitsClient:
                 return forced
         return detect_language(text)
 
+    def effective_version(self, style: GPTSovitsStyle) -> str:
+        """返回该风格实际使用的底模版本。
+
+        全局填了具体版本就用它；填 ``auto`` 时按该风格自己的权重路径推断。
+        每个风格权重路径可能不同，所以推断要按风格逐个进行。
+        """
+
+        return resolve_version(
+            getattr(self._config, "model_version", ""),
+            sovits_weights=getattr(style, "sovits_weights", "") or "",
+            gpt_weights=getattr(style, "gpt_weights", "") or "",
+        )
+
     async def synthesize(self, text: str, style_name: str, log_prefix: str) -> Optional[bytes]:
         """调用 GPT-SoVITS ``/tts`` 接口合成音频，失败返回 ``None``。
 
@@ -168,20 +188,20 @@ class GPTSovitsClient:
         forced = (getattr(style, "language", "") or "").strip()
 
         # 底模不支持该语言时直接拒绝，避免 API 返回 400 或产出空白音频
-        version = version_from_weights(getattr(style, "sovits_weights", "") or "")
+        version = self.effective_version(style)
         if not is_language_supported(text_lang, version):
+            supported = sorted(supported_languages(version))
+            # 拉丁字母等可用中文模型勉强读出，回退中文
             if is_text_readable_as(text, "zh"):
-                # 拉丁字母等可用中文模型勉强读出，回退中文
                 logger.warning(
                     "%s 语言 %s 不被底模 %s 支持（支持: %s），改用 zh",
-                    log_prefix, text_lang, version or "默认",
-                    sorted(supported_languages(version)),
+                    log_prefix, text_lang, version or "默认", supported,
                 )
                 text_lang = "zh"
             else:
                 logger.warning(
-                    "%s 语言 %s 不被底模 %s 支持，且文本用中文模型无法读出，跳过合成",
-                    log_prefix, text_lang, version or "默认",
+                    "%s 语言 %s 不被底模 %s 支持（支持: %s），且文本用中文模型无法读出，跳过合成",
+                    log_prefix, text_lang, version or "默认", supported,
                 )
                 return None
 

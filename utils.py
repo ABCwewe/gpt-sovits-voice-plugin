@@ -155,19 +155,45 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
 _IGNORABLE_SYMBOLS = re.compile(r"[\s\.,!?;:'\"()\[\]{}<>@#$%^&*\-_=+~`|\\/，。！？；：、（）【】《》「」『』…—·]")
 
 # 阿拉伯数字与中文数字
-# GPT-SoVITS 各底模实际支持的语言集合。
-# v2ProPlus / v2Pro 只支持 zh/en/ja/yue，ko 能过参数校验但内部会崩，
-# ru/fr/de 等 API 直接返回 not supported。
+# GPT-SoVITS 各底模实际可用的语言集合。
+#
+# 依据 GPT-SoVITS 源码与实测：
+#
+# 1. api_v2.py 用 tts_config.languages 做参数校验，只有两套列表：
+#       v1     = [auto, en, zh, ja, all_zh, all_ja]          → 不支持 yue
+#       v2 及以上 = [..., en, zh, ja, yue, ko, ...]           → 支持 yue
+#    所以 v1 不能合成粤语，v2 及以上可以。
+#
+# 2. 韩语（ko）在所有版本上都不可用，原因是 Windows 下 text/korean.py 依赖
+#    eunjeon（mecab 的韩语分词绑定）。没装时该模块会自动尝试
+#    「pip install eunjeon」，失败后抛出一个并非 Exception 的对象，
+#    最终表现为 api_v2 返回 500：
+#        tts failed: exceptions must derive from BaseException
+#    这不是版本差异 —— v2/v3/v4/v5 共用同一个 korean.py，都会这样。
+#    而 eunjeon 需要 MSVC 构建工具才能编译，多数环境装不上。
+#    因此所有版本都不开放韩语，避免触发这个看不懂的内部错误。
+#
+# 3. ru/th/ar/hi/el 等所有版本都不支持，API 直接返回 not supported。
 SUPPORTED_LANGUAGES_BY_VERSION = {
-    "v2ProPlus": {"zh", "en", "ja", "yue"},
+    "v1": {"zh", "en", "ja"},
+    "v2": {"zh", "en", "ja", "yue"},
     "v2Pro": {"zh", "en", "ja", "yue"},
-    "v2": {"zh", "en", "ja", "ko", "yue"},
-    "v1": {"zh", "en", "ja", "ko", "yue"},
-    "v3": {"zh", "en", "ja", "ko", "yue"},
-    "v4": {"zh", "en", "ja", "ko", "yue"},
+    "v2ProPlus": {"zh", "en", "ja", "yue"},
+    "v3": {"zh", "en", "ja", "yue"},
+    "v4": {"zh", "en", "ja", "yue"},
+    "v5dev": {"zh", "en", "ja", "yue"},
+    "v5turbo": {"zh", "en", "ja", "yue"},
 }
 
-# 无法从权重路径推断版本时的安全集合
+# 可选值：``auto`` 表示按权重路径自动推断，其余为 GPT-SoVITS 的底模版本名
+MODEL_VERSION_CHOICES = ("auto", "v1", "v2", "v2Pro", "v2ProPlus", "v3", "v4", "v5dev", "v5turbo")
+
+AUTO_VERSION = "auto"
+
+# 版本名的大小写归一表（用户可能写成 V2ProPlus / v2proplus）
+_VERSION_CANONICAL = {v.lower(): v for v in MODEL_VERSION_CHOICES if v != AUTO_VERSION}
+
+# 无法推断版本、且用户未指定时的安全集合
 DEFAULT_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "yue"}
 
 _ARABIC_DIGITS = re.compile(r"[0-9]")
@@ -307,28 +333,97 @@ def detect_language(text: str, fallback: str = "zh") -> str:
         return "zh"
 
     return "en" if english_chars / total > 0.8 else "zh"
-def version_from_weights(sovits_weights: str) -> str:
-    """从 SoVITS 权重路径推断底模版本，用于判断支持哪些语言。"""
 
-    path = (sovits_weights or "").lower().replace("\\", "/")
-    for ver in ("v2proplus", "v2pro", "v5turbo", "v5dev", "v4", "v3"):
-        if ver in path:
-            return {
-                "v2proplus": "v2ProPlus",
-                "v2pro": "v2Pro",
-                "v5turbo": "v5turbo",
-                "v5dev": "v5dev",
-                "v4": "v4",
-                "v3": "v3",
-            }[ver]
+
+def normalize_version(version: str | None) -> str:
+    """把用户填写的版本名归一为标准写法（大小写不敏感）。
+
+    无法识别时返回空字符串。
+    """
+
+    text = (version or "").strip()
+    if not text:
+        return ""
+    if text.lower() == AUTO_VERSION:
+        return AUTO_VERSION
+    return _VERSION_CANONICAL.get(text.lower(), "")
+
+
+# 版本 token 的匹配顺序：长的放前面，避免 v2ProPlus 被当成 v2Pro、v5turbo 被当成 v5
+_VERSION_TOKEN = re.compile(r"v2proplus|v2pro|v5turbo|v5dev|v4|v3|v2|v1", re.IGNORECASE)
+
+
+def _version_from_path(path: str) -> str:
+    """从权重路径推断版本，只看文件名与父目录。
+
+    GPT-SoVITS 的根目录本身就常带版本信息（如 ``GPT-SoVITS-v2pro-xxxx``），
+    若对整条路径匹配，v1 的权重会被根目录里的 ``v2pro`` 误判成 v2Pro。
+    所以这里只取「文件名」和「直接父目录」两段，例：
+
+        D:/GPT-SoVITS-v2pro-xxx/SoVITS_weights_v1/azuma_e10.pth
+                                     ^^^^^^^^^^^^^^^^^^ 只看这两段
+    """
+
+    normalized = (path or "").replace("\\", "/").strip()
+    segments = [seg for seg in normalized.split("/") if seg]
+    if not segments:
+        return ""
+
+    # 严重误判的来源（根目录名）不参与匹配
+    candidates = [segments[-1]]
+    if len(segments) >= 2:
+        candidates.append(segments[-2])
+
+    for segment in candidates:
+        match = _VERSION_TOKEN.search(segment)
+        if match:
+            return _VERSION_CANONICAL.get(match.group(0).lower(), "")
     return ""
 
 
-def supported_languages(version: str | None = None) -> set:
-    """返回指定底模支持的语言集合。"""
+def resolve_version(
+    configured: str | None = None,
+    sovits_weights: str = "",
+    gpt_weights: str = "",
+) -> str:
+    """确定当前使用的底模版本。
 
-    if version and version in SUPPORTED_LANGUAGES_BY_VERSION:
-        return SUPPORTED_LANGUAGES_BY_VERSION[version]
+    优先级：
+    1. 配置里显式指定的 ``model_version``（非 ``auto``）
+    2. 从 SoVITS 权重路径推断
+    3. 从 GPT 权重路径推断
+
+    Args:
+        configured: 配置中的 ``model_version``，``auto`` 表示自动推断
+        sovits_weights: SoVITS 权重路径
+        gpt_weights: GPT 权重路径
+
+    Returns:
+        标准版本名（如 ``v2ProPlus``）；无法确定时返回空字符串
+    """
+
+    explicit = normalize_version(configured)
+    if explicit and explicit != AUTO_VERSION:
+        return explicit
+
+    return _version_from_path(sovits_weights) or _version_from_path(gpt_weights)
+
+
+def version_from_weights(sovits_weights: str) -> str:
+    """从 SoVITS 权重路径推断底模版本（保留旧接口）。"""
+
+    return _version_from_path(sovits_weights)
+
+
+def supported_languages(version: str | None = None) -> set:
+    """返回指定底模支持的语言集合。
+
+    版本未知时返回安全集合，避免放行会触发 400 或空白音频的语言。
+    """
+
+    canonical = normalize_version(version)
+    if canonical in SUPPORTED_LANGUAGES_BY_VERSION:
+        return set(SUPPORTED_LANGUAGES_BY_VERSION[canonical])
     return set(DEFAULT_SUPPORTED_LANGUAGES)
 
 

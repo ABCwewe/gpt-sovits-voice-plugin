@@ -27,6 +27,27 @@ send_error_messages = true
 # GPT-SoVITS API 服务地址（不是 WebUI 的端口）
 server = "http://127.0.0.1:9880"
 timeout = 60
+
+# 底模版本：决定插件允许合成哪些语言。选错会导致 400 报错或空白音频。
+#   auto       按权重路径自动推断（推荐）
+#   v1         支持 中文 / 英语 / 日语
+#   v2ProPlus  支持 中文 / 英语 / 日语 / 粤语
+#   v2 / v2Pro / v3 / v4 / v5dev / v5turbo
+#              支持 中文 / 英语 / 日语 / 粤语
+#
+# 说明：
+#   - 粤语（yue）在 v1 上不可用，v2 及以上都支持
+#   - 韩语在**所有版本**上都不可用：Windows 下 text/korean.py 依赖 eunjeon
+#     （mecab 韩语绑定），装不上时上游会抛出
+#     "exceptions must derive from BaseException"，故统一拦截
+#   - 俄语、法语、德语、泰语、阿拉伯语等所有版本都不支持
+#   - 自动推断只看权重路径的文件名与直接父目录，
+#     例：SoVITS_weights_v2ProPlus/azuma3_e8_s368.pth -> v2ProPlus
+#   - 选 auto 时按**每个风格自己的**权重路径分别推断，
+#     所以不同风格用不同版本的模型也能各自识别
+#   - 推断不出时按 v2ProPlus 处理
+model_version = "auto"
+
 # 语速倍率：1.0 为原速，小于 1 更慢（0.9 = 慢 10%），大于 1 更快
 speed_factor = 1.0
 # 分段之间的静音间隔（秒）。GPT-SoVITS 会把长文本按标点切成多段分别合成再拼接，

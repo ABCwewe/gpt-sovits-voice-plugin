@@ -1,8 +1,35 @@
 """插件 Pydantic 配置模型。"""
 
-from typing import List
+from typing import Any, List, Literal
 
 from maibot_sdk import Field, PluginConfigBase
+from pydantic import field_validator
+
+# 底模版本可选值。与 utils.MODEL_VERSION_CHOICES 保持一致，
+# 这里用 Literal 声明是为了让 WebUI 渲染成下拉框而不是文本框。
+ModelVersion = Literal[
+    "auto",
+    "v1",
+    "v2",
+    "v2Pro",
+    "v2ProPlus",
+    "v3",
+    "v4",
+    "v5dev",
+    "v5turbo",
+]
+
+# 版本名的小写 → 标准写法。手写 toml 时用户很容易写成 v2proplus / V2PROPLUS，
+# 直接交给 Literal 会抛校验错误导致整份配置加载失败，这里先归一化。
+_VERSION_ALIAS = {v.lower(): v for v in ("auto", "v1", "v2", "v2Pro", "v2ProPlus", "v3", "v4", "v5dev", "v5turbo")}
+
+
+def _normalize_model_version(value: Any) -> Any:
+    """把版本名归一化为标准写法，无法识别时原样返回交由 Literal 报错。"""
+
+    if not isinstance(value, str):
+        return value
+    return _VERSION_ALIAS.get(value.strip().lower(), value)
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -166,6 +193,20 @@ class GPTSovitsConfig(PluginConfigBase):
 
     server: str = Field(default="http://127.0.0.1:9880", description="GPT-SoVITS 服务地址")
     timeout: int = Field(default=60, description="请求超时（秒）")
+    model_version: ModelVersion = Field(
+        default="auto",
+        description="底模版本，决定支持哪些语言",
+        json_schema_extra={
+            "label": "底模版本",
+            "hint": (
+                "决定插件允许合成哪些语言，选错会导致 400 报错或空白音频。"
+                "auto = 按权重路径自动推断（推荐），推断不出时按 v2ProPlus 处理。"
+                "v1 = 中英日；其余版本 = 中英日粤。"
+                "韩语在所有版本上都不可用（上游缺 eunjeon 依赖会抛内部异常），"
+                "俄语、法语、德语、泰语等所有版本都不支持。"
+            ),
+        },
+    )
     speed_factor: float = Field(default=1.0, description="语速倍率，小于 1 更慢（0.9 = 慢 10%）")
     fragment_interval: float = Field(
         default=0.0,
@@ -188,6 +229,11 @@ class GPTSovitsConfig(PluginConfigBase):
         default_factory=AutoStyleConfig,
         description="根据文本内容自动选择语气",
     )
+
+    @field_validator("model_version", mode="before")
+    @classmethod
+    def _check_model_version(cls, value: Any) -> Any:
+        return _normalize_model_version(value)
 
 
 class PluginConfig(PluginConfigBase):

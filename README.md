@@ -36,7 +36,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 本项目基于以下项目优化：
 
 - 原仓库：[CGl123/gpt-sovits-voice-plugin](https://github.com/CGl123/gpt-sovits-voice-plugin)
-- 原作者：CGl123
+- 原作者：**CGl123**（原始功能与整体设计均出自其手）
 
 在此基础上优化的主要内容：
 

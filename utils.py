@@ -131,24 +131,59 @@ def is_valid_audio(data: bytes) -> Tuple[bool, str]:
     if not samples:
         return False, "无有效采样"
 
-    # 立体声等多声道按帧求 RMS，避免声道间相位相消影响判定
-    step = max(1, channels)
-    frame_count = len(samples) // step
-    if frame_count == 0:
-        return False, "无有效采样"
+    # 立体声等多声道按帧求 RMS，避免声道间相位相消影响判定。
+    # 用 audioop.rms 在 C 层计算：逐样本 Python 循环在 60 秒音频上要 500ms，
+    # 会阻塞事件循环。audioop 在 Python 3.13 起移除，缺失时回退到整数运算。
+    rms = _compute_rms(samples, channels, width)
+    if rms is None:
+        return True, f"{duration:.2f}s（未校验音量，位宽 {width * 8}bit）"
 
-    total = 0.0
-    for i in range(frame_count):
-        base = i * step
-        for c in range(step):
-            v = samples[base + c]
-            total += v * v
-
-    rms = math.sqrt(total / (frame_count * step)) / scale
+    rms /= scale
     if rms < MIN_AUDIO_RMS:
         return False, f"音量过低（rms={rms:.0f}，疑似静音）"
 
     return True, f"{duration:.2f}s rms={rms:.0f}"
+
+
+def _compute_rms(samples: "array", channels: int, width: int) -> Optional[float]:
+    """计算多声道音频的 RMS，失败时返回 None。
+
+    优先使用 audioop（C 实现）；不可用时退回逐样本循环，但会限制采样量，
+    避免超长音频长时间占用 CPU。
+    """
+
+    if not samples:
+        return None
+
+    raw = samples.tobytes()
+    try:
+        import audioop  # type: ignore[import-not-found]
+
+        return float(audioop.rms(raw, width))
+    except Exception:
+        pass
+
+    # 回退路径：等间隔抽样。只取约 20 万个采样点即可稳定判断静音，
+    # 全量逐样本循环在 60 秒音频上要 300ms 以上，会阻塞事件循环。
+    step = max(1, channels)
+    frame_count = len(samples) // step
+    if frame_count == 0:
+        return None
+
+    target_frames = min(frame_count, 200_000)
+    stride = max(1, frame_count // target_frames)
+
+    total = 0
+    counted = 0
+    for frame in range(0, frame_count, stride):
+        base = frame * step
+        for channel in range(step):
+            value = samples[base + channel]
+            total += value * value
+            counted += 1
+    if counted == 0:
+        return None
+    return math.sqrt(total / counted)
 
 
 # 需要忽略的符号（判断「纯数字」时不计入内容）

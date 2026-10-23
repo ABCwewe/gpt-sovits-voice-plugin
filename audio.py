@@ -27,6 +27,8 @@ class AudioSender:
         # 持有延迟清理任务的强引用。asyncio 只保存任务的弱引用，
         # 不持有的话任务可能在 sleep 期间被 GC 回收，临时文件就永远留着了
         self._cleanup_tasks: set[asyncio.Task] = set()
+        # 尚未清理的文件路径。任务被取消时靠它兜底删除，避免残留。
+        self._pending_paths: set[str] = set()
 
     async def save_temp_file(self, audio_data: bytes, ctx: "PluginContext") -> Optional[str]:
         """把音频写入临时文件并安排延迟清理，返回路径供出站消息引用。"""
@@ -34,6 +36,7 @@ class AudioSender:
         audio_path = await self._save_file(audio_data, ctx)
         if audio_path is None:
             return None
+        self._pending_paths.add(audio_path)
         task = asyncio.create_task(self._cleanup_async(audio_path))
         self._cleanup_tasks.add(task)
         task.add_done_callback(self._cleanup_tasks.discard)
@@ -50,6 +53,14 @@ class AudioSender:
         """发送语音，返回 ``(success, message)``。"""
 
         if self._config.use_base64_audio:
+            # 显式开启了 base64 模式。该模式会把整段音频编码进消息体，
+            # 随后作为文本进入 MaiBot 上下文并按 token 计费，代价极高，
+            # 因此这里额外打一条警告，便于用户对照费用排查。
+            logger.warning(
+                "%s 使用 base64 模式发送语音，音频会进入上下文并按 token 计费，"
+                "建议改用文件模式（use_base64_audio = false）",
+                log_prefix,
+            )
             audio_b64 = base64.b64encode(audio_data).decode("utf-8")
             await ctx.send.custom("voice", audio_b64, stream_id)
             logger.info(
@@ -58,17 +69,14 @@ class AudioSender:
             )
             return True, f"已发送语音（风格: {style_name}）"
 
-        audio_path = await self._save_file(audio_data, ctx)
+        # 文件模式统一走 save_temp_file，保证待清理路径被登记，
+        # 卸载或热重载时才能正确收尾。
+        audio_path = await self.save_temp_file(audio_data, ctx)
         if audio_path is None:
             return False, "保存音频文件失败"
 
         await ctx.send.custom("voiceurl", audio_path, stream_id)
         logger.info("%s 语音已发送（文件，%s，风格=%s）", log_prefix, audio_path, style_name)
-        # 延迟清理：给 adapter 上传到 QQ 留足时间。
-        # 任务句柄存入集合，避免仅被事件循环弱引用而在 sleep 期间被回收
-        task = asyncio.create_task(self._cleanup_async(audio_path))
-        self._cleanup_tasks.add(task)
-        task.add_done_callback(self._cleanup_tasks.discard)
         return True, f"已发送语音（风格: {style_name}）"
 
     def _resolve_output_dir(self, ctx: "PluginContext") -> str:
@@ -129,9 +137,33 @@ class AudioSender:
     async def _cleanup_async(self, path: str) -> None:
         """延迟删除临时音频文件。"""
 
-        await asyncio.sleep(CLEANUP_DELAY)
+        try:
+            await asyncio.sleep(CLEANUP_DELAY)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._cleanup_sync, path)
+        finally:
+            self._pending_paths.discard(path)
+
+    async def close(self) -> None:
+        """取消待执行的清理任务并立即删除已落盘的临时文件。
+
+        插件卸载或进程退出时，延迟清理任务会被取消，音频文件就会残留。
+        这里主动收尾，避免临时目录持续堆积。
+        """
+
+        tasks = list(self._cleanup_tasks)
+        self._cleanup_tasks.clear()
+        for task in tasks:
+            task.cancel()
+
+        pending_paths = list(self._pending_paths)
+        self._pending_paths.clear()
+        if not pending_paths:
+            return
+
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._cleanup_sync, path)
+        for path in pending_paths:
+            await loop.run_in_executor(None, self._cleanup_sync, path)
 
     @staticmethod
     def _cleanup_sync(path: str) -> None:

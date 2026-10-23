@@ -92,8 +92,13 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         )
 
     async def on_unload(self) -> None:
-        """插件卸载：关闭 HTTP 会话。"""
+        """插件卸载：关闭 HTTP 会话并清理未到期的临时音频。"""
 
+        if self._audio is not None:
+            try:
+                await self._audio.close()
+            except Exception as exc:
+                self.ctx.logger.warning("清理临时音频失败: %s", exc)
         await self._close_session()
         self.ctx.logger.info("GPT-SoVITS 语音插件已卸载")
 
@@ -125,6 +130,14 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         """按当前配置重建会话、客户端与发送器。"""
 
         await self._close_session()
+
+        # 热重载会替换 AudioSender，旧实例的待清理文件必须在这里收尾，
+        # 否则延迟删除任务随对象一起被丢弃，音频文件就永远留在磁盘上。
+        if self._audio is not None:
+            try:
+                await self._audio.close()
+            except Exception as exc:
+                self.ctx.logger.warning("重建运行时清理临时音频失败: %s", exc)
 
         timeout = max(self.config.gpt_sovits.timeout, 10)
         self._session = aiohttp.ClientSession(

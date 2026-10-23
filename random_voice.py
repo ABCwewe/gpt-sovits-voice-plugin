@@ -151,10 +151,20 @@ class RandomVoiceDecider:
         return enabled, False
 
     def _prune(self, now: float) -> None:
-        """缓存过大时清理过期项。"""
+        """缓存过大时清理，先删过期项，仍超限再按最早过期时间淘汰。"""
 
         if len(self._decisions) <= MAX_CACHE_SIZE:
             return
+
+        # 先清已过期项
         self._decisions = {
             key: value for key, value in self._decisions.items() if value[0] >= now
         }
+        if len(self._decisions) <= MAX_CACHE_SIZE:
+            return
+
+        # 仍超限说明大量条目 TTL 很长（配置了较大的 decision_ttl），
+        # 按过期时间从早到晚淘汰，避免缓存无界增长。
+        overflow = len(self._decisions) - MAX_CACHE_SIZE
+        for key in sorted(self._decisions, key=lambda k: self._decisions[k][0])[:overflow]:
+            self._decisions.pop(key, None)

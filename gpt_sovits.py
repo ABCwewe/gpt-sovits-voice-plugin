@@ -22,6 +22,9 @@ logger = logging.getLogger("plugin.gpt_sovits_voice.gpt_sovits")
 
 # 音频数据最小有效大小（字节），小于该值视为合成失败
 MIN_AUDIO_SIZE = 100
+# 音频数据上限（字节）。正常合成的 wav 远小于该值；设置上限是为了防止
+# 服务端异常返回超大响应时把内存撑爆（read() 默认会一次性读入全部内容）。
+MAX_AUDIO_SIZE = 32 * 1024 * 1024
 
 
 class GPTSovitsClient:
@@ -244,7 +247,19 @@ class GPTSovitsClient:
                         log_prefix, response.status, error_text,
                     )
                     return None
-                audio_data = await response.read()
+                # 流式读取并限制总量，避免异常响应把内存撑爆
+                chunks: list[bytes] = []
+                received = 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    received += len(chunk)
+                    if received > MAX_AUDIO_SIZE:
+                        logger.error(
+                            "%s 音频响应超过上限（>%d 字节），已中断读取",
+                            log_prefix, MAX_AUDIO_SIZE,
+                        )
+                        return None
+                    chunks.append(chunk)
+                audio_data = b"".join(chunks)
 
         # 验证音频数据：既查大小也查是否为静音/无效 wav
         if not audio_data or len(audio_data) < MIN_AUDIO_SIZE:
@@ -253,7 +268,11 @@ class GPTSovitsClient:
             )
             return None
 
-        valid, detail = is_valid_audio(audio_data)
+        # 音频校验含 wav 解析与 RMS 计算，放到线程池执行，
+        # 避免在没有 audioop 的环境里阻塞事件循环。
+        valid, detail = await asyncio.get_running_loop().run_in_executor(
+            None, is_valid_audio, audio_data,
+        )
         if not valid:
             logger.error("%s 音频内容异常：%s", log_prefix, detail)
             return None

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="GPT-SoVITS 语音插件">
+  <title>GPT-SoVITS 语音插件</title>
+
+  <defs>
+    <!-- 背景：粉紫到天蓝的柔和渐变 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FF9FD0"/>
+      <stop offset="48%" stop-color="#B98CFF"/>
+      <stop offset="100%" stop-color="#6FC8FF"/>
+    </linearGradient>
+
+    <!-- 麦克风主体 -->
+    <linearGradient id="mic" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFDDEF"/>
+    </linearGradient>
+
+    <!-- 顶部柔光 -->
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="soft" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#6B4E9B" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- 圆角底板 -->
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#bg)"/>
+
+  <!-- 顶部柔光 -->
+  <circle cx="52" cy="32" r="48" fill="url(#glow)"/>
+
+  <!-- 声波弧线：加粗 + 提高对比，保证小尺寸可见 -->
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M32 52 A22 22 0 0 0 32 76" stroke-width="6.5" opacity="0.95"/>
+    <path d="M96 52 A22 22 0 0 1 96 76" stroke-width="6.5" opacity="0.95"/>
+    <path d="M22 43 A32 32 0 0 0 22 85" stroke-width="4.5" opacity="0.55"/>
+    <path d="M106 43 A32 32 0 0 1 106 85" stroke-width="4.5" opacity="0.55"/>
+  </g>
+
+  <!-- 麦克风主体 -->
+  <g filter="url(#soft)">
+    <!-- 托架（先画，压在麦克风后面） -->
+    <path d="M40 62 A24 24 0 0 0 88 62" fill="none" stroke="#FFFFFF"
+          stroke-width="7" stroke-linecap="round"/>
+    <line x1="64" y1="86" x2="64" y2="95" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+    <rect x="48" y="94" width="32" height="8" rx="4" fill="#FFFFFF"/>
+
+    <!-- 拾音头 -->
+    <rect x="48" y="28" width="32" height="50" rx="16" fill="url(#mic)"/>
+    <!-- 只用 3 条较粗的网罩线，小尺寸下才不会糊 -->
+    <g stroke="#E9AED2" stroke-width="2.4" stroke-linecap="round" opacity="0.85">
+      <path d="M56 42 H72"/>
+      <path d="M56 52 H72"/>
+      <path d="M56 62 H72"/>
+    </g>
+  </g>
+
+  <!-- 点缀：右上爱心，够大才能在小尺寸看到 -->
+  <path d="M97 22 c3 -4.6 10.4 -3 10.4 2.8 c0 3.9 -5 7.6 -10.4 11.5 c-5.4 -3.9 -10.4 -7.6 -10.4 -11.5 c0 -5.8 7.4 -7.4 10.4 -2.8 z"
+        fill="#FFFFFF" opacity="0.95"/>
+
+  <!-- 左下小圆点 -->
+  <circle cx="27" cy="92" r="3.2" fill="#FFFFFF" opacity="0.8"/>
+</svg>

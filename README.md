@@ -535,6 +535,23 @@ python tests/test_units.py
 | `audio.py` | 音频发送（base64 / 文件路径）与临时文件清理 |
 | `config.py` | Pydantic 配置模型 |
 | `config.example.toml` | 带完整注释的配置模板 |
+| `assets/icon.svg` | 插件图标（矢量，WebUI 与插件中心使用）|
+
+### 图标
+
+图标在 `_manifest.json` 的 `display.icon` 声明，采用插件目录内的本地 SVG：
+
+```json
+"display": {
+  "icon": {
+    "type": "local",
+    "value": "assets/icon.svg",
+    "fallback": "mic"
+  }
+}
+```
+
+矢量图在不同尺寸下都清晰；`fallback` 是加载失败时退回的 Lucide 图标名。
 
 ### 发版
 

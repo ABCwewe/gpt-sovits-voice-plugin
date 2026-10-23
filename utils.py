@@ -111,21 +111,33 @@ def ensure_sentence_end(text: str) -> str:
     return stripped + "。"
 
 
-# 裁前导静音的判定阈值（相对峰值的比例）与保留缓冲
-_LEAD_SILENCE_RATIO = 0.05
-_LEAD_KEEP_SECONDS = 0.008      # 裁切后保留的缓冲，避免硬切爆音
-_MAX_LEAD_TRIM_SECONDS = 0.5    # 最多裁切 500ms，防止把整段静音音频裁没
+# 首字处理参数
+# 用较高阈值（峰值 15%）定位「真正有力」的起点，把前面那段听不见的弱起音
+# 一并裁掉；只裁到 5% 阈值会留下几十毫秒近乎无声的噪声段，听感上仍像吞字。
+_ONSET_RATIO = 0.15
+# 裁净后向前补的静音时长。播放链路（蓝牙耳机缓冲、QQ 语音预热、手机音频
+# 焦点切换）在开始出声前需要时间启动，留这段空隙可以避免它们把第一个字的
+# 声母截掉。实测 500ms 时首字清晰度最好。
+_LEAD_PAD_SECONDS = 0.5
+# 起音淡入时长，避免波形从静音直接跳到满音量产生爆音
+_LEAD_FADE_SECONDS = 0.003
+# 原音频前导静音超过该值时视为异常（可能是整段静音），不做处理
+_MAX_LEAD_TRIM_SECONDS = 1.5
 
 
 def trim_leading_silence(data: bytes) -> bytes:
-    """裁掉音频开头的前导静音，避免第一个字被播放器吃掉。
+    """重整音频开头：裁净弱起音，再补一段静音让首字能被完整播放。
 
-    GPT-SoVITS 合成结果固定带约 90~120ms 的前导静音与极弱起音。很多播放
-    链路（蓝牙耳机缓冲、QQ 语音预热、手机音频焦点切换）会截掉这段起始静音，
-    连带把第一个字的声母一起丢掉，听感上就是「开头吞字」。
+    GPT-SoVITS 合成结果固定带约 80~140ms 前导静音，紧随其后的还是几十
+    毫秒极弱起音（rms 个位数，几乎不可闻）。播放链路常把开头这段连同
+    第一个字的声母一起截掉，听感上就是「开头吞字」。
 
-    裁切时保留约 8ms 缓冲，避免波形从非零值直接开始产生爆音。
-    无法解析或没有可裁内容时原样返回。
+    处理分三步：
+    1. 按峰值 15% 定位真正有力的起点，把弱起音一并裁掉
+    2. 向前补 ``_LEAD_PAD_SECONDS`` 的纯静音，给播放器留出启动时间
+    3. 用 3ms 淡入接入原波形，避免硬切爆音
+
+    无法解析、没有可裁内容或静音段异常长时原样返回。
     """
 
     if not data:
@@ -151,7 +163,7 @@ def trim_leading_silence(data: bytes) -> bytes:
         return data
 
     peak = max(abs(value) for value in samples) or 1
-    threshold = peak * _LEAD_SILENCE_RATIO
+    threshold = peak * _ONSET_RATIO
 
     frame_count = len(samples) // channels
     onset_frame = frame_count
@@ -160,24 +172,33 @@ def trim_leading_silence(data: bytes) -> bytes:
             onset_frame = index
             break
 
-    # 没有前导静音，或静音段超出上限（可能是整段静音），不处理
-    lead_seconds = onset_frame / rate
-    if onset_frame == 0 or lead_seconds > _MAX_LEAD_TRIM_SECONDS:
+    # 没找到有力起点（整段静音），或原前导异常长，都不处理
+    if onset_frame >= frame_count:
+        return data
+    if onset_frame / rate > _MAX_LEAD_TRIM_SECONDS:
         return data
 
-    keep_frames = int(rate * _LEAD_KEEP_SECONDS)
-    start_frame = max(0, onset_frame - keep_frames)
-    if start_frame <= 0:
-        return data
+    body = array(samples.typecode, samples[onset_frame * channels :])
 
-    trimmed = samples[start_frame * channels :]
+    # 起音淡入
+    fade_frames = int(rate * _LEAD_FADE_SECONDS)
+    fade_frames = min(fade_frames, len(body) // channels)
+    for index in range(fade_frames):
+        gain = index / fade_frames if fade_frames else 1.0
+        base = index * channels
+        for channel in range(channels):
+            body[base + channel] = int(body[base + channel] * gain)
+
+    # 补前导静音
+    pad_frames = int(rate * _LEAD_PAD_SECONDS)
+    head = array(samples.typecode, [0] * (pad_frames * channels))
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as target:
         target.setnchannels(params.nchannels)
         target.setsampwidth(params.sampwidth)
         target.setframerate(params.framerate)
-        target.writeframes(trimmed.tobytes())
+        target.writeframes((head + body).tobytes())
     return buffer.getvalue()
 
 

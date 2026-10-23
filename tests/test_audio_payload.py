@@ -372,10 +372,11 @@ def test_handle_uses_sentence_end():
 
 
 def test_leading_silence_trimmed():
-    """必须裁掉前导静音，否则播放链路会连带吃掉第一个字。
+    """开头必须重整为「固定静音 + 干净起音」。
 
-    GPT-SoVITS 合成结果固定带 85~140ms 起始静音。蓝牙耳机缓冲、
-    QQ 语音预热等环节会截掉这段，第一个字的声母就没了。
+    GPT-SoVITS 结果固定带 80~140ms 前导静音，其后还有几十毫秒极弱起音。
+    播放链路会连第一个字的声母一起截掉，所以裁净弱起音后改补一段固定
+    长度的静音，给播放器留出启动时间。
     """
 
     import array
@@ -384,11 +385,14 @@ def test_leading_silence_trimmed():
 
     utils = _load_package()["utils"]
     trim = utils.trim_leading_silence
+    pad_ms = utils._LEAD_PAD_SECONDS * 1000
 
-    def make(lead_ms: int, total_ms: int = 400, amp: int = 5000, rate: int = 32000) -> bytes:
+    def make(lead_ms: int, total_ms: int = 900, amp: int = 5000,
+             rate: int = 32000, weak_ms: int = 0) -> bytes:
         total = int(rate * total_ms / 1000)
         lead = int(rate * lead_ms / 1000)
-        samples = array.array("h", [0] * lead + [amp] * (total - lead))
+        weak = int(rate * weak_ms / 1000)
+        samples = array.array("h", [0] * lead + [50] * weak + [amp] * (total - lead - weak))
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as handle:
             handle.setnchannels(1)
@@ -409,21 +413,31 @@ def test_leading_silence_trimmed():
                 return index / rate * 1000
         return 0.0
 
-    for original_ms in (93, 108, 129, 137):
-        result = lead_of(trim(make(original_ms)))
-        check(f"前导 {original_ms}ms 裁到 10ms 内", result <= 10, f"实际 {result:.1f}ms")
+    # 不同前导静音与弱起音组合，处理后统一到补静音的长度
+    for original_ms, weak_ms in ((80, 50), (120, 0), (85, 40), (140, 60)):
+        result = lead_of(trim(make(original_ms, weak_ms=weak_ms)))
+        check(
+            f"前导 {original_ms}ms/弱起音 {weak_ms}ms 统一到 {pad_ms:.0f}ms",
+            abs(result - pad_ms) <= 20,
+            f"实际 {result:.1f}ms",
+        )
 
-    check("无前导静音时原样返回", trim(make(0)) == make(0))
     check("空数据原样返回", trim(b"") == b"")
     check("非 wav 数据原样返回", trim(b"not a wav") == b"not a wav")
 
-    # 全静音不应被裁成空文件
-    silent = trim(make(400, total_ms=400, amp=0))
-    check("全静音不被裁空", len(silent) > 0)
+    # 全静音：找不到有力起点，原样返回，不能被裁成空文件
+    silent = make(900, total_ms=900, amp=0)
+    check("全静音原样返回", trim(silent) == silent)
 
-    # 超长静音（>500ms）视为异常，不处理
-    long_lead = make(600, total_ms=900)
-    check("超长静音不处理", trim(long_lead) == long_lead)
+    # 超长前导（>1.5s）视为异常，不处理
+    long_lead = make(1800, total_ms=2400)
+    check("超长前导不处理", trim(long_lead) == long_lead)
+
+    # 处理后要能正常解析且比原音频长（补了静音、裁了弱起音）
+    out = trim(make(120, weak_ms=50))
+    with wave.open(io.BytesIO(out), "rb") as handle:
+        out_dur = handle.getnframes() / handle.getframerate()
+    check("补静音后时长增加", out_dur > 0.8, f"实际 {out_dur:.2f}s")
 
 
 def test_trim_runs_in_executor():

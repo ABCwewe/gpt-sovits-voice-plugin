@@ -111,6 +111,76 @@ def ensure_sentence_end(text: str) -> str:
     return stripped + "。"
 
 
+# 裁前导静音的判定阈值（相对峰值的比例）与保留缓冲
+_LEAD_SILENCE_RATIO = 0.05
+_LEAD_KEEP_SECONDS = 0.008      # 裁切后保留的缓冲，避免硬切爆音
+_MAX_LEAD_TRIM_SECONDS = 0.5    # 最多裁切 500ms，防止把整段静音音频裁没
+
+
+def trim_leading_silence(data: bytes) -> bytes:
+    """裁掉音频开头的前导静音，避免第一个字被播放器吃掉。
+
+    GPT-SoVITS 合成结果固定带约 90~120ms 的前导静音与极弱起音。很多播放
+    链路（蓝牙耳机缓冲、QQ 语音预热、手机音频焦点切换）会截掉这段起始静音，
+    连带把第一个字的声母一起丢掉，听感上就是「开头吞字」。
+
+    裁切时保留约 8ms 缓冲，避免波形从非零值直接开始产生爆音。
+    无法解析或没有可裁内容时原样返回。
+    """
+
+    if not data:
+        return data
+
+    try:
+        with wave.open(io.BytesIO(data), "rb") as source:
+            params = source.getparams()
+            raw = source.readframes(source.getnframes())
+    except (wave.Error, EOFError, struct.error):
+        return data
+
+    width = params.sampwidth
+    channels = params.nchannels or 1
+    rate = params.framerate or 1
+
+    if not raw or width not in (2, 4):
+        return data
+
+    samples = array("h" if width == 2 else "i")
+    samples.frombytes(raw[: len(raw) // width * width])
+    if not samples:
+        return data
+
+    peak = max(abs(value) for value in samples) or 1
+    threshold = peak * _LEAD_SILENCE_RATIO
+
+    frame_count = len(samples) // channels
+    onset_frame = frame_count
+    for index in range(frame_count):
+        if abs(samples[index * channels]) > threshold:
+            onset_frame = index
+            break
+
+    # 没有前导静音，或静音段超出上限（可能是整段静音），不处理
+    lead_seconds = onset_frame / rate
+    if onset_frame == 0 or lead_seconds > _MAX_LEAD_TRIM_SECONDS:
+        return data
+
+    keep_frames = int(rate * _LEAD_KEEP_SECONDS)
+    start_frame = max(0, onset_frame - keep_frames)
+    if start_frame <= 0:
+        return data
+
+    trimmed = samples[start_frame * channels :]
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as target:
+        target.setnchannels(params.nchannels)
+        target.setsampwidth(params.sampwidth)
+        target.setframerate(params.framerate)
+        target.writeframes(trimmed.tobytes())
+    return buffer.getvalue()
+
+
 def is_valid_audio(data: bytes) -> Tuple[bool, str]:
     """检查合成音频是否有效（非静音、时长合理）。
 

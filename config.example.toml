@@ -58,6 +58,34 @@ speed_factor = 1.0
 fragment_interval = 0.0
 
 # ─────────────────────────────────────────────────────────────
+# 文本切分（影响开头是否吞字、整体是否连贯）
+# ─────────────────────────────────────────────────────────────
+# 切分方式。切块越碎，块与块交界处越容易产生硬起音和吞字。
+#   cut0 = 不切分，整段合成，最连贯；长文本容易显存不足或超时
+#   cut1 = 按句号等标点切，每块尽量凑够 4 句（推荐，交界处最少）
+#   cut2/cut3/cut4 = 按标点切，块长依次递减
+#   cut5 = 标点与长度混合切分（GPT-SoVITS 官方默认，块较碎）
+text_split_method = "cut1"
+
+# 切块的最小长度（字），短于该值的块会与相邻块合并。
+# 块太短时开头起音来不及建立，听感上就是第一个字含糊。开头吞字明显时调到 24~32。
+min_chunk_length = 32
+
+# 相邻块在交界处重复的字数。官方默认 2，但重复会导致某个字被念两遍。
+# 如果听到交界处有重复字，保持 0。
+overlap_length = 0
+
+# ─────────────────────────────────────────────────────────────
+# 采样参数（影响音色稳定性与自然度）
+# ─────────────────────────────────────────────────────────────
+# 采样时只保留概率最高的前 k 个候选。越低越稳定但越平淡
+top_k = 15
+# 核采样阈值。1.0 表示不额外截断
+top_p = 1.0
+# 采样温度。越高越有变化但越容易跑调，越低越平稳但可能呆板
+temperature = 1.0
+
+# ─────────────────────────────────────────────────────────────
 # 自动语气：调用方未指定 style 时，按文本内容自动选择语气
 # ─────────────────────────────────────────────────────────────
 [gpt_sovits.auto_style]
@@ -138,7 +166,7 @@ style = ""
 
 [[gpt_sovits.styles]]
 name = "default"
-refer_wav = ""                      # ← 必填，例如 "D:/vioce/ref.wav"
+refer_wav = ""                      # ← 必填，例如 "C:/path/to/reference.wav"
 prompt_text = ""                    # ← 必填，例如 "今天天气不错，我们出去走走吧。"
 prompt_language = "zh"
 gpt_weights = ""                    # 可选，例如 "GPT_weights_v2ProPlus/model-e12.ckpt"
@@ -169,7 +197,7 @@ sovits_weights = ""                 # 可选，例如 "SoVITS_weights_v2ProPlus/
 # [[gpt_sovits.styles]]
 # name = "default_ja"
 # languages = ["ja"]
-# refer_wav = "D:/vioce/ref_ja.wav"
+# refer_wav = "C:/path/to/reference_ja.wav"
 # prompt_text = "おはようございます、今日もいい天気ですね。"
 # prompt_language = "ja"
 # gpt_weights = "GPT_weights_v2ProPlus/model_ja-e12.ckpt"
@@ -181,13 +209,13 @@ sovits_weights = ""                 # 可选，例如 "SoVITS_weights_v2ProPlus/
 # [[gpt_sovits.styles]]
 # name = "兴奋"
 # languages = ["zh"]
-# refer_wav = "D:/vioce/ref_excited.wav"
+# refer_wav = "C:/path/to/reference_excited.wav"
 # prompt_text = "好耶！这个真的太棒了！"
 # prompt_language = "zh"
 #
 # [[gpt_sovits.styles]]
 # name = "吐槽"
 # languages = ["zh"]
-# refer_wav = "D:/vioce/ref_complain.wav"
+# refer_wav = "C:/path/to/reference_complain.wav"
 # prompt_text = "你在说什么啊，完全听不懂。"
 # prompt_language = "zh"

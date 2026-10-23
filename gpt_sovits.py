@@ -16,6 +16,7 @@ from .utils import (
     is_valid_audio,
     resolve_version,
     supported_languages,
+    trim_leading_silence,
 )
 
 logger = logging.getLogger("plugin.gpt_sovits_voice.gpt_sovits")
@@ -223,6 +224,14 @@ class GPTSovitsClient:
             # 分段间隔：API 默认 0.3 秒会在分段之间插入纯静音，
             # 静音前后伴有衰减尾音和硬起音，听感像颤音，置 0 消除
             "fragment_interval": getattr(self._config, "fragment_interval", 0.0),
+            # 切分参数：切块过碎会让块首起音来不及建立，表现为开头吞字。
+            # 具体的默认值与说明见 config.GPTSovitsConfig。
+            "text_split_method": getattr(self._config, "text_split_method", "cut1"),
+            "min_chunk_length": getattr(self._config, "min_chunk_length", 16),
+            "overlap_length": getattr(self._config, "overlap_length", 0),
+            "top_k": getattr(self._config, "top_k", 15),
+            "top_p": getattr(self._config, "top_p", 1.0),
+            "temperature": getattr(self._config, "temperature", 1.0),
         }
         tts_url = f"{self._config.server.rstrip('/')}/tts"
 
@@ -270,12 +279,20 @@ class GPTSovitsClient:
 
         # 音频校验含 wav 解析与 RMS 计算，放到线程池执行，
         # 避免在没有 audioop 的环境里阻塞事件循环。
-        valid, detail = await asyncio.get_running_loop().run_in_executor(
-            None, is_valid_audio, audio_data,
-        )
+        loop = asyncio.get_running_loop()
+        valid, detail = await loop.run_in_executor(None, is_valid_audio, audio_data)
         if not valid:
             logger.error("%s 音频内容异常：%s", log_prefix, detail)
             return None
+
+        # 裁掉前导静音：合成结果固定带约 100ms 起始静音，播放链路常常把它
+        # 连同第一个字的声母一起裁掉，听感上就是开头吞字。
+        trimmed = await loop.run_in_executor(None, trim_leading_silence, audio_data)
+        if trimmed is not audio_data and len(trimmed) < len(audio_data):
+            logger.debug(
+                "%s 已裁掉前导静音 %d 字节", log_prefix, len(audio_data) - len(trimmed),
+            )
+            audio_data = trimmed
 
         return audio_data
 

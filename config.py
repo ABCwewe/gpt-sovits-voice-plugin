@@ -498,6 +498,84 @@ class GPTSovitsConfig(PluginConfigBase):
             "placeholder": "0",
         },
     )
+    text_split_method: str = Field(
+        default="cut1",
+        description="文本切分方式（cut0~cut5）",
+        json_schema_extra={
+            "label": "文本切分方式",
+            "x-widget": "select",
+            "options": ["cut0", "cut1", "cut2", "cut3", "cut4", "cut5"],
+            "x-option-labels": {
+                "cut0": "cut0 不切分（最连贯，长文本易出错）",
+                "cut1": "cut1 四句一切（推荐）",
+                "cut2": "cut2 按标点切且块更长",
+                "cut3": "cut3 按标点切",
+                "cut4": "cut4 按标点切且块较短",
+                "cut5": "cut5 标点+长度混合（GPT-SoVITS 默认）",
+            },
+            "hint": (
+                "决定长文本如何切成小块再合成。切块越碎，块与块交界处越容易产生"
+                "硬起音和吞字——开头第一个字听不清通常就是第一块太短导致的。\n"
+                "cut0 = 整段合成，最连贯，但长文本容易显存不足或超时，建议配合 80 字以内的文本。\n"
+                "cut1 = 按句号等标点切，每块尽量凑够 4 句，交界处最少，推荐。\n"
+                "cut5 = GPT-SoVITS 官方默认，标点与长度混合切分，块较碎。\n"
+                "实测同一段文本：cut0 2.28s / cut1 2.36s / cut5 3.02s，cut5 多出的时长"
+                "主要来自切块处插入的冗余。"
+            ),
+        },
+    )
+    min_chunk_length: int = Field(
+        default=16,
+        description="切块的最小长度（字），过短的块会被合并",
+        json_schema_extra={
+            "label": "最小切块长度",
+            "hint": (
+                "切分后短于该长度的块会与相邻块合并。块太短时开头起音来不及建立，"
+                "听感上就是第一个字含糊。16 是官方默认；开头吞字明显时可调到 24~32。"
+            ),
+            "placeholder": "16",
+        },
+    )
+    overlap_length: int = Field(
+        default=0,
+        description="切块之间的重叠字数",
+        json_schema_extra={
+            "label": "切块重叠字数",
+            "hint": (
+                "相邻块在交界处重复的字数，用来减少接缝处的断裂感。"
+                "官方默认 2，但重复会导致听感上有个字被念两遍。"
+                "如果听到交界处有重复字，调为 0。"
+            ),
+            "placeholder": "0",
+        },
+    )
+    top_k: int = Field(
+        default=15,
+        description="采样 top_k",
+        json_schema_extra={
+            "label": "top_k",
+            "hint": "采样时只保留概率最高的前 k 个候选。数值越低越稳定但越平淡，默认 15。",
+            "placeholder": "15",
+        },
+    )
+    top_p: float = Field(
+        default=1.0,
+        description="采样 top_p",
+        json_schema_extra={
+            "label": "top_p",
+            "hint": "核采样阈值，与 top_k 配合控制随机性。默认 1.0 表示不额外截断。",
+            "placeholder": "1.0",
+        },
+    )
+    temperature: float = Field(
+        default=1.0,
+        description="采样温度",
+        json_schema_extra={
+            "label": "温度",
+            "hint": "越高越有变化但越容易跑调，越低越平稳但可能呆板。默认 1.0。",
+            "placeholder": "1.0",
+        },
+    )
     styles: List[GPTSovitsStyle] = Field(
         default_factory=lambda: [GPTSovitsStyle()],
         description="语音风格配置列表（每个风格独立完整参数）",

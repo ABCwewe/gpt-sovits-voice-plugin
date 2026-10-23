@@ -371,6 +371,69 @@ def test_handle_uses_sentence_end():
     check("概率语音路径调用补全", "ensure_sentence_end(clean_text(text))" in source)
 
 
+def test_leading_silence_trimmed():
+    """必须裁掉前导静音，否则播放链路会连带吃掉第一个字。
+
+    GPT-SoVITS 合成结果固定带 85~140ms 起始静音。蓝牙耳机缓冲、
+    QQ 语音预热等环节会截掉这段，第一个字的声母就没了。
+    """
+
+    import array
+    import io
+    import wave
+
+    utils = _load_package()["utils"]
+    trim = utils.trim_leading_silence
+
+    def make(lead_ms: int, total_ms: int = 400, amp: int = 5000, rate: int = 32000) -> bytes:
+        total = int(rate * total_ms / 1000)
+        lead = int(rate * lead_ms / 1000)
+        samples = array.array("h", [0] * lead + [amp] * (total - lead))
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes(samples.tobytes())
+        return buffer.getvalue()
+
+    def lead_of(data: bytes) -> float:
+        with wave.open(io.BytesIO(data), "rb") as handle:
+            rate = handle.getframerate()
+            raw = handle.readframes(handle.getnframes())
+        samples = array.array("h")
+        samples.frombytes(raw)
+        peak = max(abs(value) for value in samples) or 1
+        for index in range(len(samples)):
+            if abs(samples[index]) > peak * 0.05:
+                return index / rate * 1000
+        return 0.0
+
+    for original_ms in (93, 108, 129, 137):
+        result = lead_of(trim(make(original_ms)))
+        check(f"前导 {original_ms}ms 裁到 10ms 内", result <= 10, f"实际 {result:.1f}ms")
+
+    check("无前导静音时原样返回", trim(make(0)) == make(0))
+    check("空数据原样返回", trim(b"") == b"")
+    check("非 wav 数据原样返回", trim(b"not a wav") == b"not a wav")
+
+    # 全静音不应被裁成空文件
+    silent = trim(make(400, total_ms=400, amp=0))
+    check("全静音不被裁空", len(silent) > 0)
+
+    # 超长静音（>500ms）视为异常，不处理
+    long_lead = make(600, total_ms=900)
+    check("超长静音不处理", trim(long_lead) == long_lead)
+
+
+def test_trim_runs_in_executor():
+    """裁剪必须在线程池执行，避免阻塞事件循环。"""
+
+    source = (ROOT / "gpt_sovits.py").read_text(encoding="utf-8")
+    check("调用了 trim_leading_silence", "trim_leading_silence" in source)
+    check("通过 run_in_executor 执行", "run_in_executor(None, trim_leading_silence" in source)
+
+
 if __name__ == "__main__":
     test_default_config()
     test_voice_message_has_no_binary()
@@ -388,6 +451,8 @@ if __name__ == "__main__":
     test_sentence_end_is_completed()
     test_sentence_end_keeps_number_style()
     test_handle_uses_sentence_end()
+    test_leading_silence_trimmed()
+    test_trim_runs_in_executor()
     test_audio_response_has_size_cap()
 
     print("\n" + "=" * 60)

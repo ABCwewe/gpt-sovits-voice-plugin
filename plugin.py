@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import asyncio
-import base64
 import logging
 
 import aiohttp
@@ -332,15 +331,19 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         text = "".join(parts).strip()
         return text or None
 
-    def _build_voice_message(self, message: Dict[str, Any], audio_b64: str) -> Dict[str, Any]:
-        """把出站消息改写成一条语音消息。"""
+    def _build_voice_message(self, message: Dict[str, Any], audio_path: str) -> Dict[str, Any]:
+        """把出站消息改写成一条语音消息。
+
+        使用 voiceurl 段携带文件路径：voice 段需要 binary_data_base64，
+        把整段音频编码进消息体后会被当作文本读入上下文并按 token 计费，
+        单条可达数十万 token。voiceurl 只传路径，适配器自行读取文件。
+        """
 
         updated = dict(message)
         updated["raw_message"] = [
             {
-                "type": "voice",
-                "data": audio_b64,
-                "binary_data_base64": audio_b64,
+                "type": "voiceurl",
+                "data": audio_path,
             }
         ]
         return updated
@@ -417,9 +420,18 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             self.ctx.logger.info("%s 概率语音合成失败，回退文字", log_prefix)
             return None
 
-        audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+        # base64 模式会把整段音频编码进消息体，随后作为文本进入 MaiBot 上下文，
+        # 单条可达数十万 token；这里统一走文件路径，避免上下文被二进制载荷撑爆。
+        if self._audio is None:
+            self.ctx.logger.warning("%s 音频发送器未就绪，回退文字", log_prefix)
+            return None
+        audio_path = await self._audio.save_temp_file(audio_data, self.ctx)
+        if audio_path is None:
+            self.ctx.logger.warning("%s 音频落盘失败，回退文字", log_prefix)
+            return None
+
         updated_kwargs = dict(kwargs)
-        updated_kwargs["message"] = self._build_voice_message(message, audio_b64)
+        updated_kwargs["message"] = self._build_voice_message(message, audio_path)
 
         # QQ 不支持「引用 + 语音」组合，会返回成功回执但不实际投递，
         # 所以转语音时必须去掉引用

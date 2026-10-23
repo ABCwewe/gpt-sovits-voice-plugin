@@ -52,7 +52,15 @@ class GeneralConfig(PluginConfigBase):
 
     min_text_length: int = Field(default=2, description="文本最小长度，过短（如单字）合成效果差，低于此值拒绝合成")
     max_text_length: int = Field(default=200, description="文本最大长度，超过有超时风险，拒绝合成")
-    use_base64_audio: bool = Field(default=True, description="true=base64 走 IPC；false=文件路径 voiceurl")
+    use_base64_audio: bool = Field(
+        default=False,
+        description=(
+            "true=base64 走 IPC；false=文件路径 voiceurl。"
+            "base64 模式会把整段音频编码后塞进消息体，"
+            "该内容会作为文本进入 MaiBot 上下文，单条可达数十万 token，"
+            "极易造成费用暴涨，除非明确了解后果否则请保持 false"
+        ),
+    )
     audio_output_dir: str = Field(
         default="data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin",
         description="音频输出目录（相对项目根目录或绝对路径），默认存到主程序推荐的 data/plugins 下",

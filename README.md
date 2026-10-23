@@ -107,7 +107,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 [general]
 min_text_length = 2          # 文本最小长度，过短（如单字）拒绝合成
 max_text_length = 200        # 文本最大长度，超过拒绝合成（超时风险）
-use_base64_audio = true      # true=base64 走 IPC；false=文件路径 voiceurl
+use_base64_audio = false     # true=base64 走 IPC；false=文件路径 voiceurl（推荐 false，见下方警告）
 audio_output_dir = "data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin"  # 文件模式输出目录，可修改
 send_error_messages = true   # 合成失败时是否提示用户
 
@@ -116,6 +116,14 @@ server = "http://127.0.0.1:9880"   # GPT-SoVITS 服务地址
 timeout = 60
 model_version = "auto"             # 底模版本，决定允许合成哪些语言
 speed_factor = 1.0                 # 语速倍率，<1 更慢（0.9 = 慢 10%）
+
+# ⚠️ 关于 use_base64_audio
+#
+# 保持 false。base64 模式会把整段音频编码后放进消息的 raw_message，
+# MaiBot 会把它当作普通文本内容读入上下文并按 token 计费。
+# 一条十几秒的语音编码后约 30 万字符，单次请求即可消耗数十万 token，
+# 且历史裁剪只按消息条数计算，这类超长消息不会被裁掉，会在每轮请求中反复重发。
+# v1.5.2 及更早版本默认值为 true，曾导致用户费用异常暴涨，v1.5.3 起改为 false。
 
 # 自动语气（调用方未指定 style 时生效）
 [gpt_sovits.auto_style]

@@ -28,6 +28,17 @@ class AudioSender:
         # 不持有的话任务可能在 sleep 期间被 GC 回收，临时文件就永远留着了
         self._cleanup_tasks: set[asyncio.Task] = set()
 
+    async def save_temp_file(self, audio_data: bytes, ctx: "PluginContext") -> Optional[str]:
+        """把音频写入临时文件并安排延迟清理，返回路径供出站消息引用。"""
+
+        audio_path = await self._save_file(audio_data, ctx)
+        if audio_path is None:
+            return None
+        task = asyncio.create_task(self._cleanup_async(audio_path))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+        return audio_path
+
     async def send(
         self,
         ctx: "PluginContext",

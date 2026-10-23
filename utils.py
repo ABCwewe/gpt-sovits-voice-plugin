@@ -73,6 +73,7 @@ def clean_text(text: str) -> str:
     无法用 GBK 编码，会导致 API 返回 400。这里提前剔除。
     """
 
+
     if not text:
         return ""
 
@@ -80,6 +81,34 @@ def clean_text(text: str) -> str:
     # 合并各类空白为单个空格
     cleaned = _WHITESPACE_PATTERN.sub(" ", cleaned)
     return cleaned.strip()
+
+
+# 各语言常用的句末标点。用于判断文本是否已经自然收尾。
+_SENTENCE_END = frozenset("。！？!?…,.、；;:：~～）)】」』》〉" + "\"'”’")
+
+
+def ensure_sentence_end(text: str) -> str:
+    """确保文本以标点收尾，避免合成时最后一个字被吞。
+
+    GPT-SoVITS 按标点切分文本再逐段合成。文本末尾没有标点时，最后一段
+    缺少终止信号，音素时长会被压缩，听感上就是「最后一个字听不清」或
+    直接被截断。这里补一个句号让收尾完整。
+
+    已有标点的文本原样返回，不做改动。
+    """
+
+    if not text:
+        return ""
+
+    stripped = text.rstrip()
+    if not stripped:
+        return ""
+
+    if stripped[-1] in _SENTENCE_END:
+        return stripped
+
+    # 数字、字母结尾时补句号同样有效；GPT-SoVITS 会按需处理
+    return stripped + "。"
 
 
 def is_valid_audio(data: bytes) -> Tuple[bool, str]:

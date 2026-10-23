@@ -28,7 +28,7 @@ from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
 from .random_voice import RandomVoiceDecider
 from .style_router import DEFAULT_RULES, route_style
-from .utils import clean_text, is_number_only
+from .utils import clean_text, ensure_sentence_end, is_number_only
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
 
@@ -258,9 +258,17 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
                     log_prefix, len(original) - len(raw_text),
                 )
 
+            # 补齐句末标点：没有标点时最后一段缺少终止信号，
+            # 合成出来的最后一个字会被压缩或吞掉。
+            # 保留补齐前的文本用于长度校验与错误提示。
+            cleaned_text = raw_text
+            raw_text = ensure_sentence_end(raw_text)
+
             min_length = self.config.general.min_text_length
             max_length = self.config.general.max_text_length
-            text_length = len(raw_text)
+            # 用补齐标点前的长度校验：补上的句号是插件自己加的，
+            # 不该让刚好等于上限的文本被判为过长，报错字数也更贴近用户输入。
+            text_length = len(cleaned_text)
 
             if not min_length <= text_length <= max_length:
                 if text_length < min_length:
@@ -470,7 +478,7 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         if self._client is None:
             return None
 
-        raw_text = clean_text(text)
+        raw_text = ensure_sentence_end(clean_text(text))
         if not raw_text:
             return None
 

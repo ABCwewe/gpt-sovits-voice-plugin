@@ -329,6 +329,48 @@ def test_base64_mode_warns():
     check("base64 分支有警告日志", "logger.warning" in source and "token" in source)
 
 
+def test_sentence_end_is_completed():
+    """无标点的文本必须补上句末标点。
+
+    GPT-SoVITS 按标点切段合成，末尾缺标点时最后一段没有终止信号，
+    合成结果里最后一个字会被压缩甚至吞掉，听感上就是「最后字听不清」。
+    """
+
+    utils = _load_package()["utils"]
+    complete = utils.ensure_sentence_end
+
+    check("无标点补句号", complete("今天天气不错") == "今天天气不错。")
+    check("单字补句号", complete("好") == "好。")
+    check("末尾空格被裁剪后补句号", complete("我饿了  ") == "我饿了。")
+
+    check("已有句号不改动", complete("今天天气不错。") == "今天天气不错。")
+    check("已有问号不改动", complete("真的假的？") == "真的假的？")
+    check("已有感叹号不改动", complete("太好了！") == "太好了！")
+    check("已有省略号不改动", complete("哈哈哈……") == "哈哈哈……")
+    check("已有波浪号不改动", complete("你好~") == "你好~")
+
+    check("空串保持空", complete("") == "")
+    check("全空格保持空", complete("   ") == "")
+
+
+def test_sentence_end_keeps_number_style():
+    """补句号不能影响纯数字风格的判定。"""
+
+    utils = _load_package()["utils"]
+    check("原始纯数字", utils.is_number_only("2333"))
+    check("补句号后仍是纯数字", utils.is_number_only(utils.ensure_sentence_end("2333")))
+
+
+def test_handle_uses_sentence_end():
+    """两条合成路径都应使用句末补全。"""
+
+    source = (ROOT / "plugin.py").read_text(encoding="utf-8")
+    check("导入了 ensure_sentence_end", "ensure_sentence_end" in source.split("\n")[30] or "ensure_sentence_end" in source)
+    # Tool/Command 路径（_handle）与概率语音路径都要调用
+    check("_handle 调用补全", "raw_text = ensure_sentence_end(raw_text)" in source)
+    check("概率语音路径调用补全", "ensure_sentence_end(clean_text(text))" in source)
+
+
 if __name__ == "__main__":
     test_default_config()
     test_voice_message_has_no_binary()
@@ -343,6 +385,9 @@ if __name__ == "__main__":
     test_runtime_rebuild_cleans_audio()
     test_send_registers_temp_file()
     test_base64_mode_warns()
+    test_sentence_end_is_completed()
+    test_sentence_end_keeps_number_style()
+    test_handle_uses_sentence_end()
     test_audio_response_has_size_cap()
 
     print("\n" + "=" * 60)

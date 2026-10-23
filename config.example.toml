@@ -22,7 +22,9 @@ max_text_length = 200
 # 除非明确了解后果，否则请保持 false。
 use_base64_audio = false
 # 音频输出目录（相对项目根目录或绝对路径）
-audio_output_dir = "data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin"
+# 建议留空：留空时用 Runner 分配的插件临时目录（runtime_dir），
+# 不用猜主程序装在哪，也不会污染插件仓库。
+audio_output_dir = ""
 # 合成失败时是否向用户发送错误提示
 send_error_messages = true
 
@@ -91,17 +93,22 @@ temperature = 1.0
 [gpt_sovits.auto_style]
 # 关闭后，未指定 style 时固定使用 fallback
 enabled = true
-# 所有规则都未命中时使用的风格（需存在于下方 styles 中）
-fallback = "default"
+# 所有规则都未命中时使用的风格
+# ⚠️ 必须与下方 [[gpt_sovits.styles]] 里的某个 name 完全一致。
+#    写成 "default" 而风格叫「默认」时，每次都会记一条
+#    「兜底风格 'default' 不在可用列表」的警告。
+fallback = "默认"
 
 # 纯数字专用风格（可选）
 # 播报价格、时间、电话号码等纯数字内容时，韵律与正常说话差异较大，
 # 指定专用风格往往效果更好。留空则按正常流程处理。
 # 判断范围：阿拉伯数字、中文数字（一二三十百千）、小数点、负号、
 #           千分位逗号，以及 年月日号点分秒元块毛角% 等数字单位。
-# number_style = "数字"
-# 纯数字判断是否包含中文数字（一二三、十百千等），默认 true
-# number_style_include_chinese = true
+# 启用示例：把下面的 "" 改成已有风格名，如 "数字"，
+#           并确保 [[gpt_sovits.styles]] 里确实有这个 name。
+number_style = ""
+# 纯数字判断是否包含中文数字（一二三、十百千等）
+number_style_include_chinese = true
 
 # 自定义匹配规则（可选，可写多条）
 # 自定义规则优先于插件内置规则，weight 越大优先级越高
@@ -150,6 +157,45 @@ skip_patterns = []
 style = ""
 
 # ─────────────────────────────────────────────────────────────
+# 语音对讲：收到语音消息后，一段时间内的回复都用语音
+# ─────────────────────────────────────────────────────────────
+#
+# 与「概率语音」的区别：
+#   - 概率语音：每条回复掷一次骰子，决定这一条转不转语音
+#   - 语音对讲：对方发了语音就进入一段「通话」，窗口内所有回复都用语音
+# 两者可同时开启，语音对讲优先。
+#
+# 前提：宿主需开启语音识别，否则收到的语音没有文字内容。
+#   位置：config/bot_config.toml -> [voice] enable_asr = true
+[intercom]
+# 总开关
+enabled = false
+
+# 只在私聊生效。群里连续刷语音很打扰人，默认不开。
+private_only = true
+
+# 是否需要先说唤醒词才进入对讲状态
+#   false = 对方发任意一条语音就开始
+#   true  = 必须先说到下面的唤醒词之一
+require_wake_word = false
+wake_words = ["语音对讲", "打电话", "对讲"]
+
+# 转写文本短于该字数时不触发，避免把杂音识别成一两个字就开启
+min_text_length = 1
+
+# 语音窗口时长（秒）。对方每发一条语音都会续期。
+# 超时后自动恢复文字回复。
+hold_seconds = 180
+
+# 单个回复的字数上限。语音太长既拖慢合成也容易被平台截断。
+max_reply_chars = 60
+
+# 回复超长时的处理方式
+#   "text"     = 改发文字（推荐，内容完整）
+#   "truncate" = 截断后仍发语音
+oversize_strategy = "text"
+
+# ─────────────────────────────────────────────────────────────
 # 语音风格：每个风格是完整独立的一套参数
 # ─────────────────────────────────────────────────────────────
 
@@ -165,7 +211,10 @@ style = ""
 #   language       强制合成语言，留空则自动检测
 
 [[gpt_sovits.styles]]
-name = "default"
+# 风格名要与 auto_style.fallback、auto_style.number_style、
+# random_voice.style、内置语气规则（兴奋/吐槽/撒娇）里引用的名字对应。
+# 叫「默认」时，插件会优先把它当兜底风格。
+name = "默认"
 refer_wav = ""                      # ← 必填，例如 "C:/path/to/reference.wav"
 prompt_text = ""                    # ← 必填，例如 "今天天气不错，我们出去走走吧。"
 prompt_language = "zh"
@@ -191,11 +240,13 @@ sovits_weights = ""                 # 可选，例如 "SoVITS_weights_v2ProPlus/
 # 需要精确控制时，请在该风格的配置中显式指定 language。
 
 # ─────────────────────────────────────────────────────────────
-# 多语言示例：检测到日语时自动切换到 default_ja
+# 多语言示例：检测到日语时自动切换到 默认_ja
 # 命名规则为 <风格名>_<语言代码>，也可用 <风格名>-<语言代码>
+# 注意：前缀必须与已有风格名完全一致，这里主风格叫「默认」，
+#       变体就要叫「默认_ja」，写成 default_ja 不会生效。
 # ─────────────────────────────────────────────────────────────
 # [[gpt_sovits.styles]]
-# name = "default_ja"
+# name = "默认_ja"
 # languages = ["ja"]
 # refer_wav = "C:/path/to/reference_ja.wav"
 # prompt_text = "おはようございます、今日もいい天気ですね。"

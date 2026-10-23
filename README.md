@@ -67,8 +67,16 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 - 🔤 **底模版本匹配**：选择底模版本后自动匹配合适的语言白名单，拦截不支持的语言
 - 🔢 **纯数字专用风格**：纯数字类文本可指定独立风格，适合播报数字/报数场景
 - 🎲 **概率语音**：按概率把普通文字回复自动转成语音，让聊天更像真人随手发语音
+- 📞 **语音对讲**（v1.6.0）：收到语音消息后一段时间内的回复都用语音发出，
+  入站消息正常入库、长期记忆完整。支持唤醒词、仅私聊、超长回退文字
+- 🔌 **插件间接口**（v1.6.0）：暴露 `is_voice_active` / `set_voice_active` /
+  `list_styles` 三个公开 API，供其他插件查询与控制语音窗口
 - ⏩ **语速控制**：`speed_factor` 全局调节合成语速
-- ✂️ **首尾完整**：自动补句末标点、裁掉前导静音，避免首字吞字与末字含糊
+- ✂️ **首尾完整**：自动补句末标点；裁净弱起音后补 500ms 静音，避免首字被播放链路截掉
+- ⏹️ **总开关**：`[plugin] enabled = false` 一键停用，工具、命令、两条出站钩子全部放行原消息
+- 🅰️ **@ 处理**：带 `at` 段的回复照常转语音，语音发出时仍保留 @ 对象；
+  与 `at` 昵称精确匹配的 `@昵称` 不进合成（实测念昵称会多花 1~1.6 秒），
+  说明性文字里的 `@`、邮箱、`user@host` 一律不动
 - 🎛️ **切分可调**：`text_split_method` / `min_chunk_length` / `overlap_length` 可调，
   平衡连贯性与长文本稳定性
 - 🧹 **文本清洗**：自动剔除零宽字符、BOM 等不可见字符，避免合成失败
@@ -83,6 +91,90 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 将插件目录放入 MaiBot 的 `plugins/` 下即可（独立 Git 仓库，随插件中心安装或手动放置均可）。
 
 依赖：`aiohttp`（MaiBot 通常已自带）。
+
+## 语音对讲（v1.6.0）
+
+模拟「打电话」的连续语音对话：对方发语音后，一段时间内的回复都用语音发出。
+
+### 与概率语音的区别
+
+| | 概率语音 | 语音对讲 |
+|---|---|---|
+| 触发依据 | 每条回复掷骰子 | 会话状态（对方发过语音）|
+| 表现 | 偶尔冒一条语音 | 连续一段时间全用语音 |
+| 适合 | 日常群聊、随手发语音 | 一对一深入聊、睡前夜谈 |
+
+两者可以同时开，**语音对讲优先**。
+
+### 工作方式
+
+```
+对方发语音
+    ↓
+chat.receive.after_process 钩子
+   发现语音 → 打开该会话的语音窗口（默认 180 秒）
+   ★ 不 abort，消息正常入库、正常交给 Planner
+    ↓
+Planner 用完整人设与记忆生成回复
+    ↓
+send_service.before_send 钩子
+   若会话在窗口内 → 把文字回复换成语音
+   超长 / 含代码链接的回复保持文字
+```
+
+**为什么不用 abort**：如果入站钩子打断消息链，消息就不会注册进
+`chat_manager`、也不会入库——对方的发言对她「不存在」，长期记忆和
+上下文都接不上，聊完就忘。改为在发送前拦截后，记忆链路完整，
+回复也由 Planner 生成（带完整人设），且不会双回复。
+
+### 配置
+
+```toml
+[intercom]
+enabled = true              # 总开关
+private_only = true         # 只在私聊生效（默认开）
+require_wake_word = false   # true = 先说唤醒词才开始
+wake_words = ["语音对讲", "打电话", "对讲"]
+min_text_length = 1         # 转写短于该字数不触发，防噪声误判
+hold_seconds = 180          # 收到语音后多久内的回复都用语音（每条新语音续期）
+max_reply_chars = 60        # 合成前的字数上限
+oversize_strategy = "text"  # 超长时：text=保持文字 / truncate=截断后合成
+```
+
+### 前提条件
+
+宿主必须开启 ASR，否则拿不到转写文本：
+
+```toml
+# config/bot_config.toml
+[voice]
+enable_asr = true
+```
+
+### 注意
+
+- 语音窗口**只存在内存**，插件重载后会清空，需重新发语音进入
+- 不影响入站消息持久化，对方的语音会正常写入聊天记录
+- 群里发语音默认不触发（`private_only = true`）
+
+### 对外 API
+
+供其他插件调用（版本 `1`，全部公开）：
+
+| API | 参数 | 用途 |
+|---|---|---|
+| `is_voice_active` | `stream_id` | 查询该会话现在是否会用语音回复 |
+| `set_voice_active` | `stream_id`, `active`, `seconds` | 强制开关语音窗口 |
+| `list_styles` | — | 列出可用音色名 |
+
+```python
+res = await self.ctx.api.call(
+    "github.lbcheng1145.gpt-sovits-voice-plugin.set_voice_active",
+    stream_id="4d12676e...",
+    active=True,
+    seconds=300,
+)
+```
 
 ### 首次安装后必做
 
@@ -111,7 +203,7 @@ LLM 可自主调用工具，用户也可通过 `/tts` 命令手动触发。
 min_text_length = 2          # 文本最小长度，过短（如单字）拒绝合成
 max_text_length = 200        # 文本最大长度，超过拒绝合成（超时风险）
 use_base64_audio = false     # true=base64 走 IPC；false=文件路径 voiceurl（推荐 false，见下方警告）
-audio_output_dir = "data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin"  # 文件模式输出目录，可修改
+audio_output_dir = ""  # 留空 = 用 Runner 分配的插件临时目录（推荐）
 send_error_messages = true   # 合成失败时是否提示用户
 
 [gpt_sovits]

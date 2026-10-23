@@ -285,12 +285,17 @@ class GPTSovitsClient:
             logger.error("%s 音频内容异常：%s", log_prefix, detail)
             return None
 
-        # 裁掉前导静音：合成结果固定带约 100ms 起始静音，播放链路常常把它
-        # 连同第一个字的声母一起裁掉，听感上就是开头吞字。
+        # 重整开头：裁净弱起音后补一段固定静音，播放链路才不会把第一个字
+        # 的声母一起截掉（听感上就是开头吞字）。
+        #
+        # 判据只能用「是不是同一个对象」，不能比较长度：该函数会补 500ms
+        # 静音，输出必然**比输入长**，用 `len(trimmed) < len(audio_data)`
+        # 判断的话永远不会成立，裁剪就白做了。
         trimmed = await loop.run_in_executor(None, trim_leading_silence, audio_data)
-        if trimmed is not audio_data and len(trimmed) < len(audio_data):
+        if trimmed is not audio_data:
             logger.debug(
-                "%s 已裁掉前导静音 %d 字节", log_prefix, len(audio_data) - len(trimmed),
+                "%s 已重整开头：%d -> %d 字节",
+                log_prefix, len(audio_data), len(trimmed),
             )
             audio_data = trimmed
 

@@ -6,7 +6,7 @@ import re
 import struct
 import wave
 from array import array
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # ─── 字符集 ──────────────────────────────────────────────────────────
 # 汉字（中日共用）
@@ -35,20 +35,6 @@ _SCRIPT_PATTERNS = {
     "el": re.compile(r"[\u0370-\u03ff]"),        # 希腊文
 }
 
-# 各语言代码的显示名（用于日志与错误提示）
-LANGUAGE_NAMES = {
-    "zh": "中文",
-    "ja": "日语",
-    "en": "英语",
-    "ko": "韩语",
-    "yue": "粤语",
-    "ru": "俄语",
-    "th": "泰语",
-    "ar": "阿拉伯语",
-    "hi": "印地语",
-    "el": "希腊语",
-}
-
 # 需要剔除的不可见/控制字符：
 # \u200b-\u200f 零宽字符与方向标记、\ufeff BOM、\u00ad 软连字符、
 # \u2060 词连接符、以及各类 C0/C1 控制符
@@ -67,12 +53,16 @@ MIN_AUDIO_RMS = 100.0       # 低于该音量视为静音
 
 
 def clean_text(text: str) -> str:
-    """清洗文本：移除不可见字符、合并多余空白。
+    """清洗文本：移除不可见字符并合并多余空白。
 
     GPT-SoVITS 的日语音素化会 print 音素，而零宽字符（如 \\u200c）
     无法用 GBK 编码，会导致 API 返回 400。这里提前剔除。
-    """
 
+    注意：**不做** @ 提及的字符级过滤。实测出站正文里 @ 出现率仅
+    0.14%，且基本都是说明性文字（「先引用原话再@对方接内容」），
+    按字符删会把语义直接删没。真正的 @ 提及是独立消息段，由
+    ``plugin._spoken_text`` 精确剔除，不做文本猜测。
+    """
 
     if not text:
         return ""
@@ -81,6 +71,7 @@ def clean_text(text: str) -> str:
     # 合并各类空白为单个空格
     cleaned = _WHITESPACE_PATTERN.sub(" ", cleaned)
     return cleaned.strip()
+
 
 
 # 各语言常用的句末标点。用于判断文本是否已经自然收尾。
@@ -346,7 +337,7 @@ MODEL_VERSION_CHOICES = ("auto", "v1", "v2", "v2Pro", "v2ProPlus", "v3", "v4", "
 AUTO_VERSION = "auto"
 
 # 版本名的大小写归一表（用户可能写成 V2ProPlus / v2proplus）
-_VERSION_CANONICAL = {v.lower(): v for v in MODEL_VERSION_CHOICES if v != AUTO_VERSION}
+VERSION_CANONICAL = {v.lower(): v for v in MODEL_VERSION_CHOICES}
 
 # 无法推断版本、且用户未指定时的安全集合
 DEFAULT_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "yue"}
@@ -501,7 +492,7 @@ def normalize_version(version: str | None) -> str:
         return ""
     if text.lower() == AUTO_VERSION:
         return AUTO_VERSION
-    return _VERSION_CANONICAL.get(text.lower(), "")
+    return VERSION_CANONICAL.get(text.lower(), "")
 
 
 # 版本 token 的匹配顺序：长的放前面，避免 v2ProPlus 被当成 v2Pro、v5turbo 被当成 v5
@@ -532,7 +523,7 @@ def _version_from_path(path: str) -> str:
     for segment in candidates:
         match = _VERSION_TOKEN.search(segment)
         if match:
-            return _VERSION_CANONICAL.get(match.group(0).lower(), "")
+            return VERSION_CANONICAL.get(match.group(0).lower(), "")
     return ""
 
 

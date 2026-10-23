@@ -5,23 +5,12 @@ from typing import Any, List, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator
 
-# 底模版本可选值。与 utils.MODEL_VERSION_CHOICES 保持一致，
-# 这里用 Literal 声明是为了让 WebUI 渲染成下拉框而不是文本框。
-ModelVersion = Literal[
-    "auto",
-    "v1",
-    "v2",
-    "v2Pro",
-    "v2ProPlus",
-    "v3",
-    "v4",
-    "v5dev",
-    "v5turbo",
-]
+from .utils import MODEL_VERSION_CHOICES, VERSION_CANONICAL
 
-# 版本名的小写 → 标准写法。手写 toml 时用户很容易写成 v2proplus / V2PROPLUS，
-# 直接交给 Literal 会抛校验错误导致整份配置加载失败，这里先归一化。
-_VERSION_ALIAS = {v.lower(): v for v in ("auto", "v1", "v2", "v2Pro", "v2ProPlus", "v3", "v4", "v5dev", "v5turbo")}
+# 底模版本可选值。直接引用 utils 里的唯一定义，用 Literal 展开是为了让
+# WebUI 把该字段渲染成下拉框而不是文本框。
+# 用 `*` 解包需要 Python 3.11+，宿主本身要求 >=3.12，无需额外兼容。
+ModelVersion = Literal[*MODEL_VERSION_CHOICES]
 
 
 def _normalize_model_version(value: Any) -> Any:
@@ -29,7 +18,7 @@ def _normalize_model_version(value: Any) -> Any:
 
     if not isinstance(value, str):
         return value
-    return _VERSION_ALIAS.get(value.strip().lower(), value)
+    return VERSION_CANONICAL.get(value.strip().lower(), value)
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -44,15 +33,22 @@ class PluginSectionConfig(PluginConfigBase):
         description="是否启用插件",
         json_schema_extra={
             "label": "启用插件",
-            "hint": "关闭后插件不再响应 /tts 命令、工具调用和概率语音，已加载的资源会释放。",
+            "hint": (
+                "关闭后不再响应 /tts 命令、tts_voice 工具、概率语音与语音对讲，"
+                "两条出站钩子也会直接放行原消息。"
+            ),
         },
     )
     config_version: str = Field(
-        default="1.0.0",
+        default="1.1.0",
         description="配置版本",
         json_schema_extra={
             "label": "配置版本",
-            "hint": "插件内部用于识别配置结构版本，升级时自动迁移。正常使用无需修改。",
+            "hint": (
+                "宿主据此判断配置结构版本，升级时自动补齐新增字段、迁移旧值。"
+                "**不可删除或留空**——缺失时宿主会拒绝加载插件，只保留配置管理。"
+                "正常使用无需修改。"
+            ),
         },
     )
 
@@ -108,16 +104,20 @@ class GeneralConfig(PluginConfigBase):
         },
     )
     audio_output_dir: str = Field(
-        default="data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin",
-        description="音频输出目录（相对项目根目录或绝对路径），默认存到主程序推荐的 data/plugins 下",
+        default="",
+        description=(
+            "音频输出目录（相对项目根目录或绝对路径）。"
+            "留空则用 Runner 分配的插件临时目录，这是推荐做法"
+        ),
         json_schema_extra={
             "label": "音频输出目录",
             "hint": (
                 "文件模式下临时音频的落盘位置，支持相对项目根目录或绝对路径。"
-                "留空则优先用 Runner 分配的插件运行时目录。"
-                "音频发出后会延迟 180 秒自动删除，不会长期占用磁盘。"
+                "**建议留空**：留空时用 Runner 分配的 runtime_dir，"
+                "不用猜主程序装在哪，也不会污染插件仓库。"
+                "音频发出后会延迟 180 秒自动删除。"
             ),
-            "placeholder": "data/plugins/github.lbcheng1145.gpt-sovits-voice-plugin",
+            "placeholder": "留空 = 使用插件临时目录",
         },
     )
     send_error_messages: bool = Field(
@@ -591,6 +591,118 @@ class GPTSovitsConfig(PluginConfigBase):
         return _normalize_model_version(value)
 
 
+class IntercomConfig(PluginConfigBase):
+    """语音对讲：收到语音消息后，一段时间内的回复都用语音。
+
+    与「概率语音」的区别：概率语音按骰子决定单条回复是否转语音；
+    语音对讲按会话状态决定——对方发了语音，就进入一段语音对话，
+    直到超时才恢复文字。
+    """
+
+    __ui_label__ = "语音对讲"
+    __ui_icon__ = "phone-call"
+    __ui_order__ = 5
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "开启后，收到语音消息会打开一个语音窗口，窗口内的回复都用语音发出。"
+            "适合「打电话」式的连续语音对话"
+        ),
+        json_schema_extra={
+            "label": "启用语音对讲",
+            "hint": (
+                "与「概率语音」不同：概率语音每句话掷骰子决定；"
+                "语音对讲是对方发了语音后，连续一段时间都用语音回，更像对话。"
+                "两者可以同时开，语音对讲优先。"
+            ),
+        },
+    )
+    private_only: bool = Field(
+        default=True,
+        description="只在私聊生效，群里不触发",
+        json_schema_extra={
+            "label": "仅私聊",
+            "hint": (
+                "默认开启。群里发语音不会触发对讲，避免连续刷语音打扰别人。"
+                "想让她在群里也用语音对话时再关掉。"
+            ),
+        },
+    )
+    require_wake_word: bool = Field(
+        default=False,
+        description="需要先收到唤醒词才进入对讲状态",
+        json_schema_extra={
+            "label": "需要唤醒词",
+            "hint": (
+                "开启后必须先用文字或语音说唤醒词才开始对讲。"
+                "关闭时任意语音都直接触发。"
+            ),
+        },
+    )
+    wake_words: List[str] = Field(
+        default_factory=lambda: ["语音对讲", "打电话", "对讲"],
+        description="唤醒词列表，命中任意一个即进入对讲状态",
+        json_schema_extra={
+            "label": "唤醒词",
+            "hint": "仅「需要唤醒词」开启时生效。命中后会重置该会话的超时计时。",
+        },
+    )
+    min_text_length: int = Field(
+        default=1,
+        ge=1,
+        le=50,
+        description="转写文本短于该字数时不触发，避免噪声误判",
+        json_schema_extra={
+            "label": "最短文本",
+            "hint": (
+                "ASR 常把杂音识别成一两个字，低于该长度不触发语音回复，"
+                "消息仍会正常进入对话。"
+            ),
+            "placeholder": "1",
+        },
+    )
+    hold_seconds: int = Field(
+        default=180,
+        ge=10,
+        le=3600,
+        description="收到语音后多少秒内的回复都转成语音",
+        json_schema_extra={
+            "label": "语音窗口（秒）",
+            "hint": (
+                "对方发了语音后的这段时间里，她的回复都会用语音发出；"
+                "超时后自动恢复文字。每条新语音都会续期。默认 3 分钟。"
+            ),
+            "placeholder": "180",
+        },
+    )
+    max_reply_chars: int = Field(
+        default=60,
+        ge=5,
+        le=500,
+        description="对讲模式下合成前的最大字数",
+        json_schema_extra={
+            "label": "回复字数上限",
+            "hint": (
+                "语音太长会拖慢合成、也容易被平台截断。"
+                "超过时按下面的策略处理。"
+            ),
+            "placeholder": "60",
+        },
+    )
+    oversize_strategy: Literal["text", "truncate"] = Field(
+        default="text",
+        description="对讲模式下回复超长的处理方式",
+        json_schema_extra={
+            "label": "超长处理",
+            "hint": (
+                "text=超长就发文字（推荐，读起来完整）；"
+                "truncate=强行截断后合成语音。"
+            ),
+        },
+    )
+
+
 class PluginConfig(PluginConfigBase):
     """插件总配置。"""
 
@@ -600,4 +712,8 @@ class PluginConfig(PluginConfigBase):
     random_voice: RandomVoiceConfig = Field(
         default_factory=RandomVoiceConfig,
         description="概率语音：按概率自动把文字回复转成语音",
+    )
+    intercom: IntercomConfig = Field(
+        default_factory=IntercomConfig,
+        description="语音对讲：收到语音后一段时间内的回复都用语音",
     )

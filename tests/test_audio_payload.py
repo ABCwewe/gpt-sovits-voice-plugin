@@ -61,12 +61,81 @@ def test_default_config():
     check("默认值说明包含风险提示", "token" in description or "上下文" in description)
 
 
+def test_output_dir_defaults_to_runtime_dir():
+    """音频目录默认留空，以便走官方推荐的 ctx.paths.runtime_dir。
+
+    官方约定：runtime_dir 放可重建的临时文件，data_dir 放需要跨重启
+    保留的数据。临时音频属于前者。早先默认值写成
+    ``data/plugins/<id>``，既把临时文件塞进了持久目录，又让
+    runtime_dir 这条分支永远不可达。
+    """
+
+    cfg = _load_package()["config"]
+    field = cfg.GeneralConfig.model_fields["audio_output_dir"]
+    check("audio_output_dir 默认为空", field.default == "", f"实际 {field.default!r}")
+
+    audio = _load_package()["audio"]
+
+    class _Cfg:
+        audio_output_dir = ""
+        use_base64_audio = False
+
+    class _Paths:
+        runtime_dir = "R:/runtime/plugin"
+
+    class _Ctx:
+        paths = _Paths()
+
+    sender = audio.AudioSender(_Cfg(), "P:/root")
+    check(
+        "留空时落到 runtime_dir",
+        sender._resolve_output_dir(_Ctx()) == "R:/runtime/plugin",
+        sender._resolve_output_dir(_Ctx()),
+    )
+
+
+def test_help_handles_missing_client():
+    """``_send_help`` 在客户端未就绪时不能抛 AttributeError。
+
+    ``self._client`` 是 Optional：帮助命令在 ``_handle`` 之前就走到，
+    不能假定运行时已初始化。
+    """
+
+    import asyncio
+    import inspect
+
+    plugin = _load_package()["plugin"]
+
+    source = inspect.getsource(plugin.GPTSovitsVoicePlugin._send_help)
+    check("_send_help 先判断 _client", "self._client is None" in source)
+
+    sent = []
+
+    class _FakeCtx:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+        class send:
+            @staticmethod
+            async def text(text, stream_id):
+                sent.append(text)
+
+    instance = object.__new__(plugin.GPTSovitsVoicePlugin)
+    object.__setattr__(instance, "_client", None)
+    object.__setattr__(instance, "_ctx", _FakeCtx())
+
+    asyncio.run(plugin.GPTSovitsVoicePlugin._send_help(instance, "s1"))
+    check("未就绪时给出提示而非崩溃", len(sent) == 1 and "尚未" in sent[0], str(sent))
+
+
 def test_voice_message_has_no_binary():
     """改写的语音消息只能携带路径，不能携带音频数据。"""
 
     plugin = _load_package()["plugin"]
     source = {"session_id": "s1", "raw_message": [{"type": "text", "data": "hi"}]}
-    result = plugin.GPTSovitsVoicePlugin._build_voice_message(None, source, "/tmp/voice.wav")
+    result = plugin.GPTSovitsVoicePlugin._build_voice_message(source, "/tmp/voice.wav")
     segment = result["raw_message"][0]
 
     check("消息段类型为 voiceurl", segment.get("type") == "voiceurl", str(segment.get("type")))
@@ -75,12 +144,68 @@ def test_voice_message_has_no_binary():
     check("载荷长度接近路径长度", len(str(segment.get("data"))) < 260, str(len(str(segment.get("data")))))
 
 
+def test_at_segment_handling():
+    """@ 段属于元数据，不该阻断改写，也不该被丢弃。
+
+    回归用例：早先把 ``at`` 与图片同样当作「非文本」直接放弃，
+    导致群里带 @ 的回复**完全不会转语音**——而群聊带 @ 是常态，
+    等于概率语音与语音对讲在群里全部失效。
+    """
+
+    plugin = _load_package()["plugin"]
+    P_cls = plugin.GPTSovitsVoicePlugin
+    extract = P_cls._extract_plain_text
+
+    check(
+        "at + 文本能提取出正文",
+        extract({"raw_message": [
+            {"type": "at", "data": {"qq": "123"}},
+            {"type": "text", "data": "你好"},
+        ]}) == "你好",
+    )
+    check(
+        "reply + at + 文本能提取出正文",
+        extract({"raw_message": [
+            {"type": "reply", "data": "1"},
+            {"type": "at", "data": {"qq": "123"}},
+            {"type": "text", "data": "你好"},
+        ]}) == "你好",
+    )
+    check(
+        "只有 at 没有正文时返回 None",
+        extract({"raw_message": [{"type": "at", "data": {"qq": "1"}}]}) is None,
+    )
+    check(
+        "图片仍然阻断改写",
+        extract({"raw_message": [
+            {"type": "image", "data": ""},
+            {"type": "text", "data": "hi"},
+        ]}) is None,
+    )
+
+    # 改写时 at 必须保留，reply 必须去掉
+    out = P_cls._build_voice_message({
+        "session_id": "s1",
+        "raw_message": [
+            {"type": "reply", "data": "1"},
+            {"type": "at", "data": {"qq": "123"}},
+            {"type": "text", "data": "你好"},
+        ],
+    }, "/tmp/a.wav")
+    types = [s["type"] for s in out["raw_message"]]
+
+    check("改写后保留 at 段", "at" in types, str(types))
+    check("改写后去掉 reply 段", "reply" not in types, str(types))
+    check("改写后带 voiceurl 段", "voiceurl" in types, str(types))
+    check("at 在语音之前", types.index("at") < types.index("voiceurl"), str(types))
+
+
 def test_original_message_not_mutated():
     """改写消息时不应修改调用方传入的原对象。"""
 
     plugin = _load_package()["plugin"]
     source = {"session_id": "s1", "raw_message": [{"type": "text", "data": "hi"}]}
-    plugin.GPTSovitsVoicePlugin._build_voice_message(None, source, "/tmp/voice.wav")
+    plugin.GPTSovitsVoicePlugin._build_voice_message(source, "/tmp/voice.wav")
 
     check("原消息 raw_message 未被改写", source["raw_message"][0]["type"] == "text")
 
@@ -329,6 +454,62 @@ def test_base64_mode_warns():
     check("base64 分支有警告日志", "logger.warning" in source and "token" in source)
 
 
+def test_mention_removed_from_speech():
+    """只剔除与 ``at`` 段精确对应的 ``@昵称``，绝不按字符猜。
+
+    曾尝试「凡是 @昵称 就删」，但真实数据证伪：出站正文里 ``@`` 的出现率
+    只有 0.14%，且几乎全是说明性文字。实测
+    ``先引用原话再@对方接内容：@过路的请继续`` 会被清成
+    ``先引用原话再 ：``，语义直接删没。
+
+    正确做法是拿 ``at`` 段的昵称做精确匹配——真正的 @ 提及本来就是独立
+    消息段，正文通常不含 ``@`` 字符。
+    """
+
+    plugin = _load_package()["plugin"]
+    P_cls = plugin.GPTSovitsVoicePlugin
+
+    # 正常情况：at 是独立段，正文不含 @，直接取正文
+    msg = {"raw_message": [
+        {"type": "at", "data": {"target_user_nickname": "天下第一", "target_user_cardname": None}},
+        {"type": "text", "data": " 对，模型自己训的"},
+    ]}
+    check("at 段昵称被收集", P_cls._collect_at_names(msg) == ["天下第一"])
+    check("正文正常提取", P_cls._spoken_text(msg) == "对，模型自己训的")
+
+    # 少数路径会把 @昵称 写进正文，此时按 at 昵称精确删除
+    msg2 = {"raw_message": [
+        {"type": "at", "data": {"target_user_nickname": "天下第一"}},
+        {"type": "text", "data": "@天下第一 对，模型自己训的"},
+    ]}
+    check("与 at 昵称匹配的 @ 被删除", P_cls._spoken_text(msg2) == "对，模型自己训的")
+
+    # 卡片名优先于昵称
+    msg3 = {"raw_message": [
+        {"type": "at", "data": {"target_user_nickname": "昵称", "target_user_cardname": "群名片"}},
+        {"type": "text", "data": "@群名片 你好"},
+    ]}
+    check("按群名片精确删除", P_cls._spoken_text(msg3) == "你好")
+
+    # 关键回归：说明性文字里的 @ 不能被误删
+    keep1 = "先引用原话再@对方接内容：@过路的请继续"
+    check(
+        "说明性文字不被误删",
+        P_cls._spoken_text({"raw_message": [{"type": "text", "data": keep1}]}) == keep1,
+    )
+    keep2 = "记得在这里@我"
+    check(
+        "@我 不被误删",
+        P_cls._spoken_text({"raw_message": [{"type": "text", "data": keep2}]}) == keep2,
+    )
+
+    # clean_text 本身不应做任何 @ 过滤
+    utils = _load_package()["utils"]
+    keep3 = "我的邮箱是 a@b.com，记得发我"
+    check("clean_text 不动邮箱", utils.clean_text(keep3) == keep3)
+    check("clean_text 不动说明性 @", utils.clean_text(keep1) == keep1)
+
+
 def test_sentence_end_is_completed():
     """无标点的文本必须补上句末标点。
 
@@ -448,9 +629,61 @@ def test_trim_runs_in_executor():
     check("通过 run_in_executor 执行", "run_in_executor(None, trim_leading_silence" in source)
 
 
+def test_trim_result_is_adopted():
+    """裁剪结果必须真的被采用，不能被长度判据挡掉。
+
+    回归用例：该函数会补 500ms 静音，输出**必然比输入长**。
+    早先用 `len(trimmed) < len(audio_data)` 判断是否采用，
+    条件永远不成立，裁剪实际从未生效（开头吞字的修复等于没上）。
+    """
+
+    source = (ROOT / "gpt_sovits.py").read_text(encoding="utf-8")
+    # 只看真正的代码行，注释里提到旧判据不算
+    code_lines = [
+        line.split("#", 1)[0]
+        for line in source.splitlines()
+    ]
+    code = "\n".join(code_lines)
+    check(
+        "不得用长度变小判断是否采用裁剪",
+        "len(trimmed) < len(audio_data)" not in code,
+    )
+    check(
+        "改用身份比较判断",
+        "trimmed is not audio_data" in code,
+    )
+
+    # 行为层面复核：输出确实比输入长，长度判据不可能命中
+    utils = _load_package()["utils"]
+    import array
+    import io
+    import wave
+
+    rate = 32000
+    samples = array.array("h", [0] * int(rate * 0.1) + [5000] * int(rate * 0.8))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(samples.tobytes())
+    source_audio = buffer.getvalue()
+
+    trimmed = utils.trim_leading_silence(source_audio)
+    check("裁剪结果与输入不是同一对象", trimmed is not source_audio)
+    check(
+        "裁剪结果比输入更长（补静音所致）",
+        len(trimmed) > len(source_audio),
+        f"{len(source_audio)} -> {len(trimmed)}",
+    )
+
+
 if __name__ == "__main__":
     test_default_config()
+    test_output_dir_defaults_to_runtime_dir()
+    test_help_handles_missing_client()
     test_voice_message_has_no_binary()
+    test_at_segment_handling()
     test_original_message_not_mutated()
     test_audio_sender_has_save_helper()
     test_plugin_no_longer_imports_base64()
@@ -462,11 +695,13 @@ if __name__ == "__main__":
     test_runtime_rebuild_cleans_audio()
     test_send_registers_temp_file()
     test_base64_mode_warns()
+    test_mention_removed_from_speech()
     test_sentence_end_is_completed()
     test_sentence_end_keeps_number_style()
     test_handle_uses_sentence_end()
     test_leading_silence_trimmed()
     test_trim_runs_in_executor()
+    test_trim_result_is_adopted()
     test_audio_response_has_size_cap()
 
     print("\n" + "=" * 60)

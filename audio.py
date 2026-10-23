@@ -79,6 +79,56 @@ class AudioSender:
         logger.info("%s 语音已发送（文件，%s，风格=%s）", log_prefix, audio_path, style_name)
         return True, f"已发送语音（风格: {style_name}）"
 
+    async def sweep_orphans(self, ctx: "PluginContext", *, max_age_seconds: float = 900.0) -> int:
+        """清理上次运行遗留的临时音频，返回删除数量。
+
+        为什么需要这个：延迟清理任务挂在 ``self._cleanup_tasks`` 上，
+        插件热重载时旧实例被整体丢弃，未到期的任务连同 ``_pending_paths``
+        一起消失，音频文件就永久留在目录里。实测重载几次就会攒下几十个。
+
+        只删本插件命名的文件（``tts_gpt_sovits_*.wav``），且只删超过
+        ``max_age_seconds`` 的，避免误删正在发送的音频。
+        """
+
+        loop = asyncio.get_running_loop()
+        output_dir = self._resolve_output_dir(ctx)
+        return await loop.run_in_executor(
+            None, self._sweep_sync, output_dir, max_age_seconds
+        )
+
+    @staticmethod
+    def _sweep_sync(output_dir: str, max_age_seconds: float) -> int:
+        """同步版本（在线程池执行）。"""
+
+        import time
+
+        if not output_dir or not os.path.isdir(output_dir):
+            return 0
+
+        now = time.time()
+        removed = 0
+        try:
+            entries = os.listdir(output_dir)
+        except OSError as exc:
+            logger.debug("扫描临时音频目录失败 %s: %s", output_dir, exc)
+            return 0
+
+        for name in entries:
+            if not (name.startswith("tts_gpt_sovits_") and name.endswith(".wav")):
+                continue
+            path = os.path.join(output_dir, name)
+            try:
+                if now - os.path.getmtime(path) < max_age_seconds:
+                    continue
+                os.remove(path)
+                removed += 1
+            except OSError as exc:
+                logger.debug("清理遗留音频失败 %s: %s", path, exc)
+
+        if removed:
+            logger.info("已清理 %d 个上次运行遗留的临时音频（%s）", removed, output_dir)
+        return removed
+
     def _resolve_output_dir(self, ctx: "PluginContext") -> str:
         """确定音频落盘目录。
 
@@ -149,6 +199,9 @@ class AudioSender:
 
         插件卸载或进程退出时，延迟清理任务会被取消，音频文件就会残留。
         这里主动收尾，避免临时目录持续堆积。
+
+        删文件改为一次性提交线程池并发执行：官方要求 ``on_unload`` 里
+        不要做耗时操作，逐个 ``await`` 在文件多时会把卸载拖成几百毫秒。
         """
 
         tasks = list(self._cleanup_tasks)
@@ -162,8 +215,13 @@ class AudioSender:
             return
 
         loop = asyncio.get_running_loop()
-        for path in pending_paths:
-            await loop.run_in_executor(None, self._cleanup_sync, path)
+        await asyncio.gather(
+            *(
+                loop.run_in_executor(None, self._cleanup_sync, path)
+                for path in pending_paths
+            ),
+            return_exceptions=True,
+        )
 
     @staticmethod
     def _cleanup_sync(path: str) -> None:

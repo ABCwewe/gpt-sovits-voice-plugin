@@ -103,15 +103,6 @@ check("纯符号返回 fallback(ko)", u.detect_language("!!!", fallback="ko") ==
 
 print()
 print("=" * 74)
-print("六、语言名称映射")
-print("=" * 74)
-
-for code in ["zh", "ja", "en", "ko", "yue", "ru", "th"]:
-    name = u.LANGUAGE_NAMES.get(code)
-    check(f"{code} 有显示名", name is not None, str(name))
-
-print()
-print("=" * 74)
 passed = sum(1 for _, c, _ in results if c)
 print(f"语言检测测试: {passed}/{len(results)} 通过")
 print("=" * 74)

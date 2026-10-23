@@ -16,21 +16,38 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import asyncio
 import logging
+import os
+import time
 
 import aiohttp
 
-from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
+from maibot_sdk import API, Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.components import ErrorPolicy, HookMode, HookOrder
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .audio import AudioSender
 from .config import PluginConfig
 from .gpt_sovits import GPTSovitsClient
+from .intercom import IntercomWindowManager
 from .random_voice import RandomVoiceDecider
 from .style_router import DEFAULT_RULES, route_style
 from .utils import clean_text, ensure_sentence_end, is_number_only
 
 logger = logging.getLogger("plugin.gpt_sovits_voice")
+
+
+def _strip_voice_wrapper(content: str) -> str:
+    """去掉宿主加的 ``[语音: xxx]`` 包装，只留正文。"""
+
+    text = str(content or "").strip()
+    if text.startswith("[语音"):
+        if ":" in text:
+            text = text.split(":", 1)[1]
+        else:
+            return ""
+    if text.endswith("]"):
+        text = text[:-1]
+    return text.strip()
 
 
 class GPTSovitsVoicePlugin(MaiBotPlugin):
@@ -49,8 +66,25 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         self._audio: Optional[AudioSender] = None
         self._decider = RandomVoiceDecider()
         self._missing_styles_warned = False
+        # 语音对讲的会话窗口（v1.6.0）
+        self._intercom = IntercomWindowManager()
+        # stream_id → (文本, 音频路径, 时刻)，用于短时间内复用同一段合成结果
+        self._intercom_audio: Dict[str, Tuple[str, str, float]] = {}
 
     # ─── 生命周期 ────────────────────────────────────────────────────────
+
+    def _enabled(self) -> bool:
+        """插件总开关。
+
+        ``config.plugin.enabled`` 是插件自己的字段，宿主不会读它——
+        宿主那层的 enabled 属于组件注册状态，是另一回事。所以必须在这里
+        判断，否则 WebUI 里关掉「启用插件」后插件照常工作，开关形同虚设。
+        """
+
+        section = getattr(self.config, "plugin", None)
+        if section is None:
+            return True
+        return bool(getattr(section, "enabled", True))
 
     async def on_load(self) -> None:
         """插件加载：创建会话与客户端，并打印风格概况。"""
@@ -62,6 +96,14 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             list(self._client.styles().keys()) if self._client else [],
         )
         self._check_config_ready()
+
+        # 清理上次运行遗留的临时音频。延迟清理任务挂在旧实例上，
+        # 热重载会连同 `_pending_paths` 一起丢弃，文件就永久留下了。
+        if self._audio is not None:
+            try:
+                await self._audio.sweep_orphans(self.ctx)
+            except Exception as exc:  # noqa: BLE001 —— 清理失败不影响加载
+                self.ctx.logger.debug("清理遗留音频失败: %s", exc)
 
     def _check_config_ready(self) -> None:
         """首次加载时检查配置是否可用，配置缺失时给出明确引导。"""
@@ -100,6 +142,18 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             except Exception as exc:
                 self.ctx.logger.warning("清理临时音频失败: %s", exc)
         await self._close_session()
+
+        # 语音窗口只存在内存里，重载后不会恢复。这里显式清空并记一笔，
+        # 避免用户看到「刚才还在语音对话，重载后突然变文字」而困惑。
+        active_ids = self._intercom.active_streams()
+        if active_ids:
+            self.ctx.logger.info(
+                "卸载时清空 %d 个语音对讲窗口（该状态不持久化，重载后需重新发语音进入）",
+                len(active_ids),
+            )
+            for sid in active_ids:
+                self._intercom.close(sid)
+
         self.ctx.logger.info("GPT-SoVITS 语音插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
@@ -184,6 +238,8 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         """处理 LLM 调用的 ``tts_voice`` 工具。"""
 
         del kwargs
+        if not self._enabled():
+            return False, "插件已禁用"
         if not stream_id:
             return False, "缺少 stream_id，无法发送"
         return await self._handle(stream_id, text, style, "tool")
@@ -205,10 +261,17 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         """处理 ``/tts`` 系列命令。
 
         Returns:
-            (success, message, intercept) 三元组，``intercept=True`` 表示拦截消息不再继续。
+            ``(success, message, intercept)`` 三元组。
+
+            第三个值在官方文档里写作 weight（权重），但宿主实际实现
+            （``component_query._build_command_executor``）是把它当
+            ``intercept`` 用的：``intercept = bool(result[2])``。
+            这里按宿主实行为准——命令由插件独占处理，一律返回 True。
         """
 
         del kwargs
+        if not self._enabled():
+            return False, "插件已禁用", True
         groups = matched_groups or {}
         user_text = (groups.get("text") or "").strip()
         user_style = (groups.get("style") or "").strip()
@@ -326,12 +389,24 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
 
     # ─── 概率语音：拦截出站文字并转成语音 ──────────────────────────────
 
+    #: 出站消息里属于「元数据」而非正文的消息段类型。
+    #:
+    #: ``reply`` 是引用信息，``at`` 是 @ 的对象——QQ 里 @ 的是谁并不属于
+    #: 朗读内容，两者都不影响正文。带图片、语音、文件等真实媒体段时
+    #: 仍然整体放弃改写。
+    _NON_BODY_SEGMENTS = frozenset({"reply", "at", "face"})
+
     @staticmethod
     def _extract_plain_text(message: Dict[str, Any]) -> Optional[str]:
         """从出站消息里取出纯文本内容。
 
-        只有「全部组件都是 text」时才返回文本，否则返回 ``None``：
-        带图片、语音、文件等组件的消息不应该被改写成语音。
+        跳过 ``reply`` / ``at`` / ``face`` 这些元数据段后，若剩下的全是
+        text，就返回拼好的正文；出现图片、语音、文件等真实媒体则返回
+        ``None``——那些消息不该被改写成语音。
+
+        为什么 ``at`` 要跳过：群里回复常带 @，它只是指明对谁说话。
+        早先把 ``at`` 当作「非文本」直接放弃，导致群聊里的概率语音与
+        语音对讲**完全不生效**，而群聊带 @ 是常态。
         """
 
         raw_message = message.get("raw_message")
@@ -342,32 +417,207 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         for item in raw_message:
             if not isinstance(item, dict):
                 return None
-            # reply 是引用元数据，不影响正文，跳过即可
-            if str(item.get("type", "")).strip().lower() == "reply":
+            seg_type = str(item.get("type", "")).strip().lower()
+            if seg_type in GPTSovitsVoicePlugin._NON_BODY_SEGMENTS:
                 continue
-            if item.get("type") != "text":
+            if seg_type != "text":
                 return None
             parts.append(str(item.get("data") or ""))
 
         text = "".join(parts).strip()
         return text or None
 
-    def _build_voice_message(self, message: Dict[str, Any], audio_path: str) -> Dict[str, Any]:
+    @staticmethod
+    def _collect_at_names(message: Dict[str, Any]) -> List[str]:
+        """收集消息里 ``at`` 段指向的昵称。
+
+        ``at`` 段的 ``data`` 结构在不同路径下不一致：
+        适配器发的是 ``{"qq": id}``，宿主序列化的是
+        ``{"target_user_id":..., "target_user_nickname":..., ...}``。
+        这里只取能拿到的昵称/卡片名，拿不到就返回空列表。
+        """
+
+        names: List[str] = []
+        for item in message.get("raw_message") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")).strip().lower() != "at":
+                continue
+            data = item.get("data")
+            if not isinstance(data, dict):
+                continue
+            for key in ("target_user_cardname", "target_user_nickname"):
+                value = str(data.get(key) or "").strip()
+                if value and value not in names:
+                    names.append(value)
+        return names
+
+    @classmethod
+    def _spoken_text(cls, message: Dict[str, Any]) -> Optional[str]:
+        """取出真正要朗读的正文。
+
+        在 :meth:`_extract_plain_text` 的基础上，额外剔除正文里与 ``at``
+        段**完全对应**的 ``@昵称``。
+
+        为什么只按精确昵称删，而不是按 ``@`` 字符猜：实测出站正文里
+        ``@`` 出现率只有 0.14%，且几乎都是说明性文字（例如
+        「先引用原话再@对方接内容」），按字符删会把语义直接删没。
+        真正的 @ 提及是独立消息段，正文里通常不含 ``@`` 字符；
+        只有少数路径会把 ``@昵称`` 写进正文，这时用 at 段的昵称精确匹配
+        才安全。
+        """
+
+        text = cls._extract_plain_text(message)
+        if text is None:
+            return None
+
+        for name in cls._collect_at_names(message):
+            mention = f"@{name}"
+            if mention in text:
+                text = text.replace(mention, " ")
+        return text.strip() or None
+
+    @staticmethod
+    def _build_voice_message(message: Dict[str, Any], audio_path: str) -> Dict[str, Any]:
         """把出站消息改写成一条语音消息。
 
         使用 voiceurl 段携带文件路径：voice 段需要 binary_data_base64，
         把整段音频编码进消息体后会被当作文本读入上下文并按 token 计费，
         单条可达数十万 token。voiceurl 只传路径，适配器自行读取文件。
+
+        改写时保留 ``at`` 段：群里 @ 某人回复是有意义的信息，全部丢掉
+        会让语音回复失去指向对象。``reply`` 段则必须去掉——QQ 不支持
+        「引用 + 语音」组合，带上会返回成功回执但不实际投递。
+
+        两条出站路径（概率语音、语音对讲）共用此方法。
         """
 
-        updated = dict(message)
-        updated["raw_message"] = [
-            {
-                "type": "voiceurl",
-                "data": audio_path,
-            }
+        # 只保留 at 段，其余正文段都被语音替换
+        kept = [
+            dict(item)
+            for item in (message.get("raw_message") or [])
+            if isinstance(item, dict)
+            and str(item.get("type", "")).strip().lower() == "at"
         ]
+
+        updated = dict(message)
+        updated["raw_message"] = kept + [{"type": "voiceurl", "data": audio_path}]
         return updated
+
+    # ─── 语音对讲：入站标记（v1.6.0）─────────────────────────────────────
+
+    @HookHandler(
+        "chat.receive.after_process",
+        name="gpt_sovits_intercom_mark",
+        description="发现语音消息时打开该会话的语音回复窗口",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.NORMAL,
+        # 只做判定与标记，不合成，必须很快返回
+        timeout_ms=3000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def intercom_inbound_hook(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """收到语音消息时标记会话。
+
+        刻意 **不** abort 消息链：让入站消息正常注册进 chat_manager 并入库，
+        这样对方的发言会进入长期记忆，Planner 也能用完整上下文生成回复。
+        语音转换在出站钩子里做。
+
+        返回 ``None`` 表示不干预消息内容。
+        """
+
+        config = getattr(self.config, "intercom", None)
+        if config is None or not config.enabled or not self._enabled():
+            return None
+
+        message = kwargs.get("message")
+        if not isinstance(message, dict):
+            return None
+
+        transcript, is_voice = self._extract_voice_transcript(message)
+        if not is_voice:
+            return None
+
+        # 仅私聊：消息带 group_info 就判为群聊。
+        # 不用「group_id 非空」——群号缺失时会被误判成私聊。
+        if config.private_only and self._is_group_message(message):
+            self.ctx.logger.debug("群聊消息，仅私聊模式下不开启对讲")
+            return None
+
+        stream_id = str(message.get("session_id") or "").strip()
+        if not stream_id:
+            self.ctx.logger.warning("消息缺少 session_id，无法标记语音会话")
+            return None
+
+        if not transcript:
+            self.ctx.logger.info("语音转写为空或失败，本次不开启对讲")
+            return None
+
+        decision = self._intercom.evaluate(
+            stream_id=stream_id,
+            text=transcript,
+            min_text_length=config.min_text_length,
+            hold_seconds=config.hold_seconds,
+            require_wake_word=config.require_wake_word,
+            wake_words=list(config.wake_words or []),
+        )
+        if not decision.respond:
+            self.ctx.logger.debug("不开启对讲（%s）：%s", decision.reason, transcript[:30])
+            return None
+
+        self.ctx.logger.info("语音对讲开启[%s]：%s", stream_id, transcript[:60])
+        return None
+
+    @staticmethod
+    def _extract_voice_transcript(message: Dict[str, Any]) -> Tuple[str, bool]:
+        """从消息段里取语音转写文本，返回 ``(文本, 是否含语音)``。
+
+        宿主开启 ``voice.enable_asr`` 后会把语音转成 ``[语音: xxx]``。
+        """
+
+        raw = message.get("raw_message")
+        if not isinstance(raw, list) or not raw:
+            return "", False
+
+        parts: List[str] = []
+        has_voice = False
+        for item in raw:
+            if not isinstance(item, dict):
+                return "", False
+            seg_type = str(item.get("type") or "").strip().lower()
+            data = item.get("data")
+
+            if seg_type == "reply":
+                continue
+            if seg_type == "voice":
+                has_voice = True
+                content = str(data or "").strip()
+                if "转录失败" in content:
+                    return "", True
+                parts.append(_strip_voice_wrapper(content))
+                continue
+            if seg_type == "text":
+                parts.append(str(data or "").strip())
+                continue
+            # 图片/表情/文件等不参与对讲判定
+            return "", False
+
+        if not has_voice:
+            return "", False
+        return " ".join(p for p in parts if p).strip(), True
+
+    @staticmethod
+    def _is_group_message(message: Dict[str, Any]) -> bool:
+        """是不是群聊消息。
+
+        宿主序列化时私聊的 ``group_info`` 为 ``None``，群聊是字典。
+        只看结构是否存在，不依赖 group_id 的值。
+        """
+
+        info = message.get("message_info")
+        if not isinstance(info, dict):
+            return False
+        return isinstance(info.get("group_info"), dict)
 
     @HookHandler(
         "send_service.before_send",
@@ -382,7 +632,12 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def random_voice_hook(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        """出站拦截：按概率把纯文本回复改成语音。
+        """出站拦截：把纯文本回复改成语音。
+
+        两条触发路径，优先级从高到低：
+
+        1. **语音对讲**（``intercom.enabled``）：该会话在语音窗口内 → 一定转。
+        2. **概率语音**（``random_voice.enabled``）：掷骰子决定 → 按概率转。
 
         返回 ``{"action": "continue", "modified_kwargs": {...}}`` 表示改写消息；
         返回 ``None`` 表示不干预，消息原样发出。
@@ -390,27 +645,42 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
         任何一步判断不通过都直接放行文字，绝不因为插件故障吞掉用户消息。
         """
 
-        config = getattr(self.config, "random_voice", None)
-        if config is None or not config.enabled:
-            return None
-
         message = kwargs.get("message")
         if not isinstance(message, dict):
             return None
-
-        text = self._extract_plain_text(message)
-        if text is None:
+        if not self._enabled():
             return None
 
-        # 已经是语音消息的不要再套一层
+        # 已经是语音消息的不要再套一层。
+        # 同时认 ``voice``（base64/其他插件发出）与 ``voiceurl``（本插件
+        # 改写后的形态）。当前 ``_extract_plain_text`` 遇到这两种都会返回
+        # None，所以即便这里漏判也不会重复合成；但显式判掉更直观，
+        # 也避免以后放宽文本提取规则时出现「语音套语音」。
         raw_message = message.get("raw_message")
         if isinstance(raw_message, list) and any(
-            isinstance(item, dict) and item.get("type") == "voice"
+            isinstance(item, dict)
+            and str(item.get("type") or "").strip().lower() in {"voice", "voiceurl"}
             for item in raw_message
         ):
             return None
 
+        text = self._spoken_text(message)
+        if text is None:
+            return None
+
         stream_id = str(kwargs.get("stream_id") or message.get("session_id") or "").strip()
+        if not stream_id:
+            return None
+
+        # ── 路径 1：语音对讲优先 ──────────────────────────────────────
+        intercom = getattr(self.config, "intercom", None)
+        if intercom is not None and intercom.enabled and self._intercom.is_voice_active(stream_id):
+            return await self._convert_for_intercom(kwargs, message, text, stream_id, intercom)
+
+        # ── 路径 2：概率语音 ─────────────────────────────────────────
+        config = getattr(self.config, "random_voice", None)
+        if config is None or not config.enabled:
+            return None
 
         suitable, reason = self._decider.text_is_suitable(
             text,
@@ -430,50 +700,155 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
 
         log_prefix = f"[gpt_sovits_voice][random][{stream_id}]"
 
-        # 合成失败时回退发送原始文字，不让用户收不到回复
-        try:
-            audio_data = await self._synthesize_for_random(text, config.style, log_prefix)
-        except Exception as exc:  # 兜底：无论如何都不能吞掉消息
-            self.ctx.logger.error("%s 概率语音合成异常，回退文字：%s", log_prefix, exc)
+        audio_path, size = await self._synthesize_and_save(
+            text, config.style, log_prefix, tag="概率语音",
+        )
+        if audio_path is None:
             return None
+
+        self.ctx.logger.info(
+            "%s 已将文字回复转为语音（%d 字节，%s），文本前 30 字：%s",
+            log_prefix, size, "缓存命中" if from_cache else "新掷骰", text[:30],
+        )
+        return self._wrap_voice_reply(kwargs, message, audio_path)
+
+    async def _synthesize_and_save(
+        self,
+        text: str,
+        style: str,
+        log_prefix: str,
+        *,
+        tag: str,
+    ) -> Tuple[Optional[str], int]:
+        """合成音频并落盘，返回 ``(路径, 字节数)``。
+
+        失败时返回 ``(None, 0)``，调用方据此回退发送原始文字。
+        概率语音与语音对讲两条出站路径共用这段流程——它们的差别只在
+        「要不要转」的判定，一旦决定要转，后续步骤完全相同。
+
+        统一走文件路径而非 base64：base64 会把整段音频编进消息体，
+        随后作为文本进入上下文并按 token 计费，单条可达数十万 token。
+        """
+
+        try:
+            audio_data = await self._synthesize_reply(text, style, log_prefix)
+        except Exception as exc:  # noqa: BLE001 —— 无论如何都不能吞掉消息
+            self.ctx.logger.error("%s %s合成异常，回退文字：%s", log_prefix, tag, exc)
+            return None, 0
 
         if audio_data is None:
-            self.ctx.logger.info("%s 概率语音合成失败，回退文字", log_prefix)
-            return None
+            self.ctx.logger.info("%s %s合成失败，回退文字", log_prefix, tag)
+            return None, 0
 
-        # base64 模式会把整段音频编码进消息体，随后作为文本进入 MaiBot 上下文，
-        # 单条可达数十万 token；这里统一走文件路径，避免上下文被二进制载荷撑爆。
         if self._audio is None:
             self.ctx.logger.warning("%s 音频发送器未就绪，回退文字", log_prefix)
-            return None
+            return None, 0
+
         audio_path = await self._audio.save_temp_file(audio_data, self.ctx)
         if audio_path is None:
             self.ctx.logger.warning("%s 音频落盘失败，回退文字", log_prefix)
+            return None, 0
+
+        return audio_path, len(audio_data)
+
+    async def _convert_for_intercom(
+        self,
+        kwargs: Dict[str, Any],
+        message: Dict[str, Any],
+        text: str,
+        stream_id: str,
+        intercom: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """语音对讲路径的转换：无条件转语音（受字数与可读性约束）。"""
+
+        limit = max(5, int(intercom.max_reply_chars or 60))
+        content = text
+        if len(content) > limit:
+            if str(intercom.oversize_strategy) == "text":
+                self.ctx.logger.debug(
+                    "对讲回复超长（%d > %d），保持文字", len(content), limit
+                )
+                return None
+            content = content[:limit].rstrip()
+
+        # 含链接/代码的回复念出来很别扭，保持文字
+        for pattern in ("http://", "https://", "```", "![", "|--"):
+            if pattern in content:
+                self.ctx.logger.debug("对讲回复含不宜朗读内容（%s），保持文字", pattern)
+                return None
+
+        log_prefix = f"[gpt_sovits_voice][intercom][{stream_id}]"
+
+        # 同一条文本在短时间内重复出现时不重复合成。
+        # 一条回复常被拆成多段发送，实测同一会话两次相邻发送只隔几秒；
+        # 每段都调一次 GPT-SoVITS 会让合成耗时与显存占用翻倍。
+        cached_path = self._recall_intercom_audio(stream_id, content)
+        if cached_path is not None:
+            self.ctx.logger.debug("%s 复用刚合成的音频：%s", log_prefix, content[:30])
+            return self._wrap_voice_reply(kwargs, message, cached_path)
+
+        audio_path, size = await self._synthesize_and_save(
+            content, "", log_prefix, tag="对讲",
+        )
+        if audio_path is None:
             return None
 
-        updated_kwargs = dict(kwargs)
-        updated_kwargs["message"] = self._build_voice_message(message, audio_path)
+        self._remember_intercom_audio(stream_id, content, audio_path)
+        self.ctx.logger.info(
+            "%s 对讲回复转语音（%d 字节）：%s", log_prefix, size, content[:40]
+        )
+        return self._wrap_voice_reply(kwargs, message, audio_path)
 
-        # QQ 不支持「引用 + 语音」组合，会返回成功回执但不实际投递，
-        # 所以转语音时必须去掉引用
+    @staticmethod
+    def _wrap_voice_reply(
+        kwargs: Dict[str, Any],
+        message: Dict[str, Any],
+        audio_path: str,
+    ) -> Dict[str, Any]:
+        """把改写后的 kwargs 组装成钩子返回值（两条出站路径共用）。"""
+
+        updated_kwargs = dict(kwargs)
+        updated_kwargs["message"] = GPTSovitsVoicePlugin._build_voice_message(
+            message, audio_path
+        )
+        # QQ 不支持「引用 + 语音」组合
         if kwargs.get("set_reply"):
             updated_kwargs["set_reply"] = False
             updated_kwargs["reply_message_id"] = ""
-
-        self.ctx.logger.info(
-            "%s 已将文字回复转为语音（%d 字节，%s）%s",
-            log_prefix, len(audio_data), "缓存命中" if from_cache else "新掷骰",
-            f"，文本前 30 字：{text[:30]}",
-        )
         return {"action": "continue", "modified_kwargs": updated_kwargs}
 
-    async def _synthesize_for_random(
+    def _remember_intercom_audio(self, stream_id: str, text: str, path: str) -> None:
+        """记下刚合成的音频，供短时间内的重复文本复用。"""
+
+        now = time.monotonic()
+        self._intercom_audio[stream_id] = (text, path, now)
+        # 顺手清掉过期项，避免字典无限增长
+        ttl = 15.0
+        for sid in [k for k, v in self._intercom_audio.items() if now - v[2] > ttl]:
+            self._intercom_audio.pop(sid, None)
+
+    def _recall_intercom_audio(self, stream_id: str, text: str) -> Optional[str]:
+        """取回 15 秒内同一会话、同一文本的音频路径。"""
+
+        item = self._intercom_audio.get(stream_id)
+        if not item:
+            return None
+        cached_text, path, at = item
+        if cached_text != text or time.monotonic() - at > 15.0:
+            return None
+        if not os.path.exists(path):
+            # 已被清理任务删掉，不能复用
+            self._intercom_audio.pop(stream_id, None)
+            return None
+        return path
+
+    async def _synthesize_reply(
         self,
         text: str,
         style: str,
         log_prefix: str,
     ) -> Optional[bytes]:
-        """概率语音路径的合成：复用与 Tool/Command 相同的选风格逻辑。"""
+        """出站路径的合成：复用与 Tool/Command 相同的文本清洗与选风格逻辑。"""
 
         if self._client is None:
             return None
@@ -580,7 +955,15 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             await self.ctx.send.text(message, stream_id)
 
     async def _send_help(self, stream_id: str) -> None:
-        """发送帮助信息。"""
+        """发送帮助信息。
+
+        ``_client`` 是 Optional（插件未完成加载时为空），这里必须自己兜底：
+        帮助命令在 ``_handle`` 之前就走到了，不能假定运行时已就绪。
+        """
+
+        if self._client is None:
+            await self.ctx.send.text("插件尚未完成加载，请稍后再试", stream_id)
+            return
 
         styles = self._client.styles()
         style_desc = "、".join(styles.keys()) if styles else "（未配置）"
@@ -601,6 +984,73 @@ class GPTSovitsVoicePlugin(MaiBotPlugin):
             f"🌏 多语言：检测到日语等语言时自动切换到对应语言模型（若已配置）"
         )
         await self.ctx.send.text(help_text, stream_id)
+
+    # ─── 对外 API（v1.6.0）──────────────────────────────────────────────
+
+    @API(
+        "is_voice_active",
+        description="查询某个会话当前是否处于语音对讲窗口内",
+        version="1",
+        public=True,
+    )
+    async def api_is_voice_active(self, stream_id: str = "") -> Dict[str, Any]:
+        """供其他插件调用：判断该会话现在会不会用语音回复。"""
+
+        sid = str(stream_id or "").strip()
+        if not sid:
+            return {"success": False, "active": False, "reason": "缺少 stream_id"}
+        active = self._intercom.is_voice_active(sid)
+        return {
+            "success": True,
+            "active": active,
+            "window_count": len(self._intercom.active_streams()),
+        }
+
+    @API(
+        "set_voice_active",
+        description="强制开启或关闭某个会话的语音对讲窗口",
+        version="1",
+        public=True,
+    )
+    async def api_set_voice_active(
+        self,
+        stream_id: str = "",
+        active: bool = True,
+        seconds: int = 0,
+    ) -> Dict[str, Any]:
+        """供其他插件调用：手动控制语音窗口，绕过唤醒词与字数检查。"""
+
+        sid = str(stream_id or "").strip()
+        if not sid:
+            return {"success": False, "reason": "缺少 stream_id"}
+
+        if not active:
+            self._intercom.close(sid)
+            return {"success": True, "active": False}
+
+        hold = int(seconds) if seconds and seconds > 0 else int(
+            getattr(getattr(self.config, "intercom", None), "hold_seconds", 180) or 180
+        )
+        self._intercom.force_open(sid, hold_seconds=hold)
+        return {"success": True, "active": True, "expires_in": hold}
+
+    @API(
+        "list_styles",
+        description="列出当前可用的声音风格名",
+        version="1",
+        public=True,
+    )
+    async def api_list_styles(self) -> Dict[str, Any]:
+        """供其他插件调用：查到有哪些音色可选。"""
+
+        names: List[str] = []
+        if self._client is not None:
+            names = list(self._client.styles().keys())
+        return {
+            "success": bool(names),
+            "styles": names,
+            "default": self._client.default_style_name() if self._client else "",
+        }
 
     def _project_root(self) -> str:
         """推断 MaiBot 项目根目录（plugins/<本插件>/plugin.py 向上三级）。"""

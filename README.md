@@ -101,10 +101,10 @@ send_error_messages = true         # 合成失败时是否提示用户
 server = "http://127.0.0.1:9880"
 timeout = 60
 model_version = "auto"             # 底模版本，决定允许合成哪些语言
-speed_factor = 1.0                 # 语速倍率，<1 更慢（0.9 = 慢 10%）
+speed_factor = 1.0                 # 语速倍率，越大越快（0.9~1.0 几乎无差别，1.2 以上才明显）
 
-# 文本切分：切块越碎，交界处越容易吞字
-text_split_method = "cut1"         # cut0 不切分 / cut1 四句一切（推荐）/ cut5 官方默认
+# 文本切分：决定句与句之间有没有停顿，是最影响自然度的参数
+text_split_method = "cut0"         # cut0 整段合成（停顿自然）/ cut5 每标点都切（停顿明确）
 min_chunk_length = 16              # 最小块长，块太短会导致开头起音不完整
 overlap_length = 0                 # 交界处重复字数，非 0 会让某个字被念两遍
 

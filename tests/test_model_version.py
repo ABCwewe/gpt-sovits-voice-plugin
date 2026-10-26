@@ -66,7 +66,7 @@ PATH_CASES = [
     (r"SoVITS_weights_v2ProPlus\azuma3_e8_s368.pth", "v2ProPlus"),
     # 绝对路径：根目录的 v2pro 不能污染 v1 权重
     (
-        r"D:\GPT-SoVITS-v2pro-20261006nvidia50x0\SoVITS_weights_v1\azuma_e10.pth",
+        r"D:\Tools\GPT-SoVITS-v2pro-sample\SoVITS_weights_v1\model_e10.pth",
         "v1",
     ),
     # 父目录无版本，靠文件名
